@@ -698,6 +698,28 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "downloads the production model for the installer smoke test"]
+    async fn prepare_production_model_for_smoke_test() {
+        let directory = PathBuf::from(
+            std::env::var_os("RWKV_SMOKE_MODEL_DIR").expect("set RWKV_SMOKE_MODEL_DIR"),
+        );
+        let store = ModelStore::production();
+        let path = store
+            .prepare(
+                directory,
+                vec![],
+                Arc::new(|p| {
+                    if p.phase != "downloading" || p.downloaded_bytes == 0 {
+                        eprintln!("MODEL {} {} {}", p.phase, p.source, p.message);
+                    }
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::metadata(path).unwrap().len(), store.spec.bytes);
+    }
+
+    #[tokio::test]
     #[ignore = "downloads the real 1.34 GB production model; run explicitly"]
     async fn real_domestic_download_and_cache_reuse() {
         let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

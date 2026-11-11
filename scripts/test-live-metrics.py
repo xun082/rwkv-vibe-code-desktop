@@ -36,30 +36,36 @@ def main():
     cli.add_argument('--concurrency',type=int,choices=(1,2,3,4),default=4)
     cli.add_argument('--max-tokens',type=int,default=12000)
     cli.add_argument('--transport-only',action='store_true')
+    cli.add_argument('--runtime-dir',type=Path,default=ROOT/'src-tauri/resources/runtime')
     cli.add_argument('--strict-content',action='store_true',help='also require requested photo assets in every model response')
     args=cli.parse_args()
     OUT=ROOT/'local-model-results'/(f'batch-{args.concurrency}-lane'+('-transport'if args.transport_only else ''))
     OUT.mkdir(parents=True, exist_ok=True)
     for artifact in ('summary.json','validation.json'): (OUT/artifact).unlink(missing_ok=True)
-    source=(ROOT/'src-tauri/src/prompt.rs').read_text()
+    source=(ROOT/'src-tauri/src/prompt.rs').read_text(encoding='utf-8')
     def constant(name): return re.search(r'pub const '+name+r': &str = r#"(.*?)"#;',source,re.S).group(1)
     prefix=constant('WEBPAGE_PREFIX');instruction=constant('STREAMING_INSTRUCTION');prefill=constant('HTML_PREFILL')
     examples = json.loads(subprocess.check_output([
         'node', '--input-type=module', '-e',
         "import { EXAMPLE_PROMPTS } from './src/lib/examples.ts'; console.log(JSON.stringify(EXAMPLE_PROMPTS));",
-    ], cwd=ROOT, text=True))
+    ], cwd=ROOT, encoding='utf-8'))
     prompts_by_key = {example['key']: example['prompt'] for example in examples}
     cases=['创建一个咖啡店官网，店名「慢半拍」，暖白和咖啡棕配色，介绍三款咖啡和营业时间。']+[prompts_by_key[key] for key in ('hotel','museum','saas')]
     cases=cases[:args.concurrency]
-    model_name=json.loads((ROOT/'src-tauri/model-manifest.json').read_text())['filename']
-    model_candidates=[Path(os.environ['RWKV_MODEL_PATH'])] if os.environ.get('RWKV_MODEL_PATH') else [Path.home()/'Library/Application Support/studio.moment.localpage/models'/model_name,Path.home()/'Models/rwkv'/model_name,ROOT/'src-tauri/resources/models'/model_name]
+    model_name=json.loads((ROOT/'src-tauri/model-manifest.json').read_text(encoding='utf-8'))['filename']
+    windows = os.name == 'nt'
+    app_data = Path(os.environ['APPDATA']) if windows else Path.home()/'Library/Application Support'
+    model_candidates=[Path(os.environ['RWKV_MODEL_PATH'])] if os.environ.get('RWKV_MODEL_PATH') else [app_data/'studio.moment.localpage/models'/model_name,Path.home()/'Models/rwkv'/model_name,ROOT/'src-tauri/resources/models'/model_name]
     model=next((candidate for candidate in model_candidates if candidate.is_file()),None)
     if model is None: raise RuntimeError('Open the desktop app to install the model first, or set RWKV_MODEL_PATH.')
-    runtime=ROOT/'src-tauri/resources/runtime'
+    runtime=args.runtime_dir.resolve()
+    server=runtime/('llama-server.exe' if windows else 'llama-server')
+    model_arg=model.name if windows else str(model.resolve())
+    working_dir=model.resolve().parent if windows else runtime
     with socket.socket() as sock: sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
     env=dict(os.environ);env.pop('GGML_BACKEND_PATH',None)
     with (OUT/'runtime.log').open('w') as log:
-        proc=subprocess.Popen([str(runtime/'llama-server'),'-m',str(model),'-ngl','99','-np',str(args.concurrency),'-c',str(16384*args.concurrency),'--host','127.0.0.1','--port',str(port),'--jinja','--reasoning','off','--cache-ram','0','--slots'],cwd=runtime,env=env,stdout=log,stderr=log)
+        proc=subprocess.Popen([str(server),'-m',model_arg,'-ngl','0' if windows else '99','-np',str(args.concurrency),'-c',str(16384*args.concurrency),'--host','127.0.0.1','--port',str(port),'--jinja','--reasoning','off','--cache-ram','0','--slots'],cwd=working_dir,env=env,stdout=log,stderr=log)
         client=urllib.request.build_opener(urllib.request.ProxyHandler({}));base=f'http://127.0.0.1:{port}';audit=[];finished=threading.Event();monitor=None
         def post(path,payload):
             audit.append({'method':'POST','path':path,'promptCount':len(payload['prompt']) if isinstance(payload.get('prompt'),list) else None})
@@ -72,9 +78,11 @@ def main():
                         if json.load(response).get('status')=='ok': break
                 except Exception: time.sleep(.25)
             else: raise RuntimeError('server health timeout')
-            listing=subprocess.check_output(['lsof','-p',str(proc.pid),'-Fn'],text=True)
-            loaded_images=sorted({line[1:]for line in listing.splitlines()if line.startswith('n')and line.endswith(('.so','.dylib'))})
-            assert not any('/opt/homebrew/' in path for path in loaded_images), 'runtime loaded a development-machine dependency'
+            loaded_images=[]
+            if not windows:
+                listing=subprocess.check_output(['lsof','-p',str(proc.pid),'-Fn'],text=True)
+                loaded_images=sorted({line[1:]for line in listing.splitlines()if line.startswith('n')and line.endswith(('.so','.dylib'))})
+                assert not any('/opt/homebrew/' in path for path in loaded_images), 'runtime loaded a development-machine dependency'
             marker='__LOCALPAGE_BATCH_REQUEST__'
             with post('/apply-template',dict(messages=[{'role':'system','content':instruction},{'role':'user','content':marker}],add_generation_prompt=True,chat_template_kwargs={'enable_thinking':False})) as response: template=json.load(response)['prompt']+prefill
             (OUT/'template.txt').write_text(template)
@@ -93,9 +101,10 @@ def main():
                         with client.open(base+'/slots',timeout=2) as response: data=json.load(response)
                         slots.append({'at_s':time.monotonic()-start,'busy':sum(bool(slot['is_processing'])for slot in data)})
                     except Exception: pass
-                    try:
-                        rss=int(subprocess.check_output(['ps','-o','rss=','-p',str(proc.pid)],text=True).strip());rss_samples.append(rss)
-                    except Exception: pass
+                    if not windows:
+                        try:
+                            rss=int(subprocess.check_output(['ps','-o','rss=','-p',str(proc.pid)],text=True).strip());rss_samples.append(rss)
+                        except Exception: pass
                     finished.wait(.5)
             monitor=threading.Thread(target=observe_slots);monitor.start();last_saved=0
             with post('/completion',payload) as response:
@@ -136,6 +145,7 @@ def main():
                 samples=state['samples'];text=state['text']
                 state['contentChecks']=dict(sectionCount=text.count('<section'),hasNav='<nav' in text,hasFooter='<footer' in text,hasUnsplash='images.unsplash.com' in text,closedHtml='</html>' in text)
                 assert state['done']
+                assert samples[-1]['tokens'] > 0 and len(text) > len(prefill)
                 assert samples[-1]['tokens']==state['final_event']['tokens_predicted']
                 assert all(a['tokens']<=b['tokens']for a,b in zip(samples,samples[1:]))
                 if not args.transport_only:

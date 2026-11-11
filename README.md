@@ -10,13 +10,21 @@
 
 ## 本地开发
 
-桌面端目前以 macOS Apple Silicon 为目标。开发需要 Node.js 24、pnpm 11.25.0、Python 3、Xcode Command Line Tools 和 Rustup。Rust 版本由 `rust-toolchain.toml` 固定。
+桌面端支持 macOS Apple Silicon 和 Windows x64。开发需要 Node.js 24、pnpm 11.25.0、Python 3.11+ 和 Rustup。Rust 版本由 `rust-toolchain.toml` 固定。
 
-打包脚本使用 Homebrew 布局的 llama.cpp **0.9.0（cd959bae9）** 及配套的 GGML 等动态库。默认从 PATH 查找 `llama-server`，也可用 `LLAMA_SERVER_PATH` 指向匹配版本的可执行文件。
+macOS 开发需要 Xcode Command Line Tools 和 Homebrew 布局的 llama.cpp **0.9.0（cd959bae9）**。默认从 PATH 查找 `llama-server`，也可用 `LLAMA_SERVER_PATH` 指向匹配版本。
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm desktop:dev
+```
+
+Windows 开发需要 Visual Studio C++ Build Tools（x64）和 WebView2。运行时准备脚本下载同一提交的 llama.cpp CPU x64 版本，打包其 DLL 与所需的 Microsoft C++ 运行库。CPU 推理会自动选择机器支持的指令集。
+
+```powershell
+pnpm install --frozen-lockfile
+python scripts/prepare-runtime.py
+pnpm tauri dev
 ```
 
 `pnpm dev` 可单独预览前端。本地推理在 Tauri 桌面窗口内运行。
@@ -27,9 +35,9 @@ pnpm desktop:dev
 pnpm desktop:build
 ```
 
-生成 `src-tauri/target/release/bundle/macos/织页.app` 和 `src-tauri/target/release/bundle/dmg/织页_0.2.0_aarch64.dmg`。DMG 约 17 MB，包含推理运行时和模型许可。默认配置使用本地测试签名，面向用户分发需配置 Developer ID 签名和公证。
+macOS 产物位于 `src-tauri/target/release/bundle/dmg/`。Windows 运行 `python scripts/prepare-runtime.py` 后执行 `pnpm tauri build`，NSIS 安装包位于 `src-tauri/target/release/bundle/nsis/`。安装包内含推理运行时和模型许可。macOS 使用测试签名，Windows 预发行版目前无代码签名。
 
-首次启动自动检查并准备约 **1.34 GB** 的模型。应用会复用已安装模型，也可从 `~/Models/rwkv/` 导入。缺失时优先从魔搭国内 CDN 下载，支持暂停、继续和失败换源。模型通过 SHA-256 校验后保存在 `~/Library/Application Support/studio.moment.localpage/models/`，之后可离线推理。预览使用内置 Tailwind 编译器，网页中的 Unsplash 图片仍需网络。
+首次启动自动检查并准备约 **1.34 GB** 的模型。应用会复用已安装模型，也可从 `~/Models/rwkv/` 导入。缺失时优先从魔搭国内 CDN 下载，支持暂停、继续和失败换源。模型通过 SHA-256 校验后保存到应用数据目录，之后可离线推理。macOS 路径为 `~/Library/Application Support/studio.moment.localpage/models/`，Windows 路径为 `%APPDATA%\studio.moment.localpage\models\`。预览使用内置 Tailwind 编译器，网页中的 Unsplash 图片仍需网络。
 
 下载地址、固定版本和校验值见 [模型清单](src-tauri/model-manifest.json)。国内主源为 [同作者的 ModelScope 仓库](https://modelscope.cn/models/shoumenchougou/RWKV7-G1l-1.5B-GGUF)，备用顺序为魔搭 API、HF-Mirror、Hugging Face 原站。这个文件经 HF-Mirror 会跳转海外 CDN。
 

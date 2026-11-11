@@ -21,6 +21,9 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 const MAX_QUEUE: usize = 12;
 const MAX_CONCURRENCY: usize = 4;
 
@@ -220,7 +223,8 @@ async fn start_engine(
     state.stop_runtime();
     *state.0.last_error.lock().unwrap() = None;
     let res = resources(&app)?;
-    let server = res.join("runtime/llama-server");
+    let runtime_dir = res.join("runtime");
+    let server = runtime_dir.join(format!("llama-server{}", std::env::consts::EXE_SUFFIX));
     if !server.is_file() {
         return Err("缺少内置推理运行时，请重新安装应用".into());
     }
@@ -239,12 +243,26 @@ async fn start_engine(
     fs::create_dir_all(&log_dir).map_err(|e| e.to_string())?;
     let log = File::create(log_dir.join("llama-server.log")).map_err(|e| e.to_string())?;
     let err_log = log.try_clone().map_err(|e| e.to_string())?;
-    let child = Command::new(&server)
+    let mut command = Command::new(&server);
+    #[cfg(windows)]
+    let model_arg = {
+        // The Windows executable receives narrow argv. Use the ASCII model filename
+        // so it also works for accounts whose data directory contains Unicode.
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        command.current_dir(model.parent().ok_or("找不到模型目录")?);
+        model.file_name().ok_or("找不到模型文件名")?
+    };
+    #[cfg(not(windows))]
+    let model_arg = {
+        command.current_dir(runtime_dir);
+        model.as_os_str()
+    };
+    let child = command
         .args(["-m"])
-        .arg(&model)
+        .arg(model_arg)
         .args([
             "-ngl",
-            "99",
+            if cfg!(windows) { "0" } else { "99" },
             "-c",
             &(16384 * concurrency).to_string(),
             "-np",
@@ -264,7 +282,6 @@ async fn start_engine(
         ])
         .env("LLAMA_API_KEY", &key)
         .env_remove("GGML_BACKEND_PATH")
-        .current_dir(res.join("runtime"))
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(err_log))

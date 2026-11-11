@@ -1,6 +1,6 @@
 {
   "name": "local-page-studio",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 1420 --strictPort",
     "tauri": "tauri",
     "desktop:dev": "pnpm prepare:runtime && tauri dev",
-    "desktop:build": "pnpm prepare:runtime && tauri build --bundles app,dmg",
+    "desktop:build": "pnpm prepare:runtime && tauri build",
     "prepare:runtime": "python3 scripts/prepare-runtime.py",
     "test": "node --test tests/*.test.mjs",
     "test:concurrency": "python3 scripts/test-concurrency.py"

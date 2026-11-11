@@ -1,6 +1,6 @@
 [package]
 name = "local-page-studio"
-version = "0.2.0"
+version = "0.2.1"
 description = "Offline webpage generation with RWKV"
 authors = ["moment"]
 edition = "2021"
