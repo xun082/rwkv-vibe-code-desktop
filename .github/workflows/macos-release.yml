@@ -139,6 +139,7 @@ jobs:
         run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Build Windows NSIS installer
+        shell: cmd
         run: pnpm exec tauri build --bundles nsis -- --locked
 
       - name: Install the package and verify its runtime
