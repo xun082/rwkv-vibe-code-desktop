@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "织页",
+  "version": "0.2.0",
+  "identifier": "studio.moment.localpage",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "RWKV Vibe Code",
+        "width": 1440,
+        "height": 940,
+        "minWidth": 960,
+        "minHeight": 680,
+        "backgroundColor": "#f9fafb"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://images.unsplash.com https://plus.unsplash.com https://source.unsplash.com; font-src 'self' data:; connect-src ipc: http://ipc.localhost; frame-src 'self' about: blob:; object-src 'none'; base-uri 'self'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://images.unsplash.com https://plus.unsplash.com https://source.unsplash.com; connect-src ipc: http://ipc.localhost http://127.0.0.1:* ws://127.0.0.1:*; frame-src 'self' about: blob:; object-src 'none'; base-uri 'self'",
+      "dangerousDisableAssetCspModification": [
+        "script-src"
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "app",
+      "dmg"
+    ],
+    "resources": {
+      "resources/runtime/": "runtime/",
+      "resources/model-license/": "model-license/"
+    },
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-"
+    },
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.icns"
+    ]
+  }
+}

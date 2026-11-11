@@ -1,0 +1,26 @@
+{
+  "filename": "rwkv7-g1l-1.5b-Q6_K.gguf",
+  "bytes": 1336082592,
+  "sha256": "e7ad47a81a8999694fd02a286b38dffc75927200401eac2812b7c8518a4b87fd",
+  "repository": "shoumenchougou/RWKV7-G1l-1.5B-GGUF",
+  "modelscope_revision": "e87d6d854db33183453036fd2957c600535555f8",
+  "huggingface_revision": "4a535e3ad6e74cf821d72bbc518579b1f27e3ada",
+  "sources": [
+    {
+      "name": "魔搭 ModelScope（国内）",
+      "url": "https://modelscope.cn/models/shoumenchougou/RWKV7-G1l-1.5B-GGUF/resolve/e87d6d854db33183453036fd2957c600535555f8/rwkv7-g1l-1.5b-Q6_K.gguf"
+    },
+    {
+      "name": "魔搭备用接口（国内）",
+      "url": "https://modelscope.cn/api/v1/models/shoumenchougou/RWKV7-G1l-1.5B-GGUF/repo?Revision=e87d6d854db33183453036fd2957c600535555f8&FilePath=rwkv7-g1l-1.5b-Q6_K.gguf"
+    },
+    {
+      "name": "HF-Mirror 备用",
+      "url": "https://hf-mirror.com/shoumenchougou/RWKV7-G1l-1.5B-GGUF/resolve/4a535e3ad6e74cf821d72bbc518579b1f27e3ada/rwkv7-g1l-1.5b-Q6_K.gguf"
+    },
+    {
+      "name": "Hugging Face 原站",
+      "url": "https://huggingface.co/shoumenchougou/RWKV7-G1l-1.5B-GGUF/resolve/4a535e3ad6e74cf821d72bbc518579b1f27e3ada/rwkv7-g1l-1.5b-Q6_K.gguf"
+    }
+  ]
+}
