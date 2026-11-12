@@ -97,7 +97,7 @@ jobs:
           test -z "$(find "${app[0]}" -iname '*.gguf' -print -quit)"
           "${app[0]}/Contents/Resources/runtime/llama-server" --version 2>&1 | grep -F cd959bae9
           mkdir -p release
-          file="RWKV-Vibe-Code-Desktop_${VERSION}_aarch64.dmg"
+          file="RWKV-Vibe-Code_${VERSION}_aarch64.dmg"
           cp "${dmg[0]}" "release/$file"
           cd release
           shasum -a 256 "$file" > "$file.sha256"
@@ -147,7 +147,7 @@ jobs:
           $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           $installer = @(Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*-setup.exe')
           if ($installer.Count -ne 1) { throw 'Expected one Windows installer' }
-          $installDir = Join-Path $env:RUNNER_TEMP 'RWKV 织页 smoke install'
+          $installDir = Join-Path $env:RUNNER_TEMP 'RWKV-Vibe-Code 安装测试'
           $setup = Start-Process -FilePath $installer[0].FullName -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
           if ($setup.ExitCode -ne 0) { throw "NSIS exited with $($setup.ExitCode)" }
           $runtimeDir = Join-Path $installDir 'runtime'
@@ -157,7 +157,7 @@ jobs:
           Write-Host $runtimeVersion
           "RWKV_SMOKE_INSTALL_DIR=$installDir" >> $env:GITHUB_ENV
           $null = New-Item -ItemType Directory -Path release
-          $file = "RWKV-Vibe-Code-Desktop_${version}_x64-setup.exe"
+          $file = "RWKV-Vibe-Code_${version}_x64-setup.exe"
           Copy-Item $installer[0].FullName "release/$file"
           $digest = (Get-FileHash "release/$file" -Algorithm SHA256).Hash.ToLowerInvariant()
           ("$digest  $file" + [char]10) | Set-Content "release/$file.sha256" -Encoding ascii -NoNewline
@@ -254,12 +254,12 @@ jobs:
         shell: bash
         run: |
           tag="v$VERSION"
-          file="RWKV-Vibe-Code-Desktop_${VERSION}_aarch64.dmg"
-          windows_file="RWKV-Vibe-Code-Desktop_${VERSION}_x64-setup.exe"
+          file="RWKV-Vibe-Code_${VERSION}_aarch64.dmg"
+          windows_file="RWKV-Vibe-Code_${VERSION}_x64-setup.exe"
           sha256sum --check "$file.sha256" "$windows_file.sha256"
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             ref_args=(--verify-tag)
           else
             ref_args=(--target "$GITHUB_SHA")
           fi
-          gh release create "$tag" "${ref_args[@]}" --prerelease --title "RWKV Vibe Code Desktop $tag" --notes 'Apple Silicon (macOS 13.3+) and Windows x64 (CPU). Test builds: macOS is ad-hoc signed and Windows is unsigned. The local model is installed on first launch.' "$file" "$file.sha256" "$windows_file" "$windows_file.sha256"
+          gh release create "$tag" "${ref_args[@]}" --prerelease --title "RWKV-Vibe-Code $tag" --notes 'Default concurrency is 4. Manual and automatic settings use even tiers from 2 to 16. Apple Silicon (macOS 13.3+) and Windows x64 (CPU). macOS is ad-hoc signed and Windows is unsigned. The local model is installed on first launch.' "$file" "$file.sha256" "$windows_file" "$windows_file.sha256"
