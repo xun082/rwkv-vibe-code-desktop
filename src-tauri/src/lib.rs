@@ -1,4 +1,5 @@
 mod batch;
+mod concurrency;
 mod metrics;
 mod model_store;
 mod prompt;
@@ -24,8 +25,7 @@ use uuid::Uuid;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
-const MAX_QUEUE: usize = 12;
-const MAX_CONCURRENCY: usize = 4;
+const MAX_QUEUE: usize = 3 * concurrency::MAX;
 
 #[derive(Clone)]
 struct EngineConnection {
@@ -47,6 +47,7 @@ struct Inner {
     client: reqwest::Client,
     last_error: Mutex<Option<String>>,
     models: model_store::ModelStore,
+    hardware: concurrency::HardwareProfile,
 }
 #[derive(Clone)]
 struct AppState(Arc<Inner>);
@@ -59,11 +60,12 @@ impl AppState {
             client: reqwest::Client::builder()
                 .no_proxy()
                 .connect_timeout(Duration::from_secs(5))
-                .timeout(Duration::from_secs(600))
+                .read_timeout(Duration::from_secs(120))
                 .build()
                 .expect("HTTP client"),
             last_error: Mutex::new(None),
             models: model_store::ModelStore::production(),
+            hardware: concurrency::HardwareProfile::detect(),
         }))
     }
     fn shutdown(&self) {
@@ -95,10 +97,13 @@ impl AppState {
         }
         EngineStatus {
             ready: guard.as_ref().is_some_and(|r| r.ready),
-            concurrency: guard.as_ref().map_or(MAX_CONCURRENCY, |r| r.concurrency),
+            concurrency: guard
+                .as_ref()
+                .map_or(concurrency::DEFAULT, |r| r.concurrency),
             pending: self.0.jobs.lock().unwrap().len(),
             model: self.0.models.spec.filename.clone(),
             error: self.0.last_error.lock().unwrap().clone(),
+            hardware: self.0.hardware,
         }
     }
 }
@@ -110,6 +115,7 @@ struct EngineStatus {
     pending: usize,
     model: String,
     error: Option<String>,
+    hardware: concurrency::HardwareProfile,
 }
 
 #[derive(Clone, Serialize)]
@@ -207,14 +213,16 @@ async fn start_engine(
     state: State<'_, AppState>,
     concurrency: usize,
 ) -> Result<EngineStatus, String> {
-    if !(1..=MAX_CONCURRENCY).contains(&concurrency) {
-        return Err("本机支持 1–4 路并发".into());
+    if !concurrency::is_supported(concurrency) {
+        return Err(format!(
+            "请选择 {}–{} 路的偶数并发档位",
+            concurrency::MIN,
+            concurrency::MAX
+        ));
     }
     let _lock = state.0.lifecycle.lock().await;
     let status = state.status();
-    // A warm four-slot engine can serve a one-prompt batch without reloading
-    // 1.3 GB of model weights just because the UI selects one result.
-    if status.ready && status.concurrency >= concurrency {
+    if status.ready && status.concurrency == concurrency {
         return Ok(status);
     }
     if !state.0.jobs.lock().unwrap().is_empty() {
@@ -382,8 +390,12 @@ async fn generate_pages(
     requests: Vec<PageRequest>,
     on_event: Channel<GenerationEvent>,
 ) -> Result<(), String> {
-    if !(1..=MAX_CONCURRENCY).contains(&requests.len()) {
-        return Err("一次批量请求支持 1–4 条 prompt".into());
+    if !(concurrency::MIN..=concurrency::MAX).contains(&requests.len()) {
+        return Err(format!(
+            "一次批量请求支持 {}–{} 条需求",
+            concurrency::MIN,
+            concurrency::MAX
+        ));
     }
     let mut ids = HashSet::new();
     for request in &requests {

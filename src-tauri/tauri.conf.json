@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "织页",
-  "version": "0.2.1",
+  "productName": "RWKV-Vibe-Code",
+  "version": "0.2.2",
   "identifier": "studio.moment.localpage",
   "build": {
     "beforeDevCommand": "pnpm dev",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "RWKV Vibe Code",
+        "title": "RWKV-Vibe-Code",
         "width": 1440,
         "height": 940,
         "minWidth": 960,

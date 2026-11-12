@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as bridge from '../bridge';
 import { buildPromptBatch } from '../lib/batch-prompts';
 import { applyGenerationEvent } from '../lib/generation-events';
-import type { Concurrency, GenerationEvent, ModelProgress, PageJob } from '../types';
+import { DEFAULT_CONCURRENCY, type Concurrency, type GenerationEvent, type HardwareProfile, type ModelProgress, type PageJob } from '../types';
 
 interface ActiveBatch {
   ids: string[];
@@ -19,7 +19,8 @@ export function useGeneration() {
   const [error, setError] = useState('');
   const [preparing, setPreparing] = useState(bridge.desktop);
   const [modelProgress, setModelProgress] = useState<ModelProgress | null>(null);
-  const preparation = useRef<Promise<void> | null>(null);
+  const [hardware, setHardware] = useState<HardwareProfile | null>(null);
+  const preparation = useRef<{ lanes: number; promise: Promise<void> } | null>(null);
   const buffered = useRef(new Map<string, PageJob>());
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeBatch = useRef<ActiveBatch | null>(null);
@@ -33,20 +34,26 @@ export function useGeneration() {
     if (mounted.current) setResults(jobs);
   }, []);
 
-  const prepareEngine = useCallback(() => {
-    if (preparation.current) return preparation.current;
+  const prepareEngine = useCallback(async (lanes: number) => {
+    while (preparation.current) {
+      if (preparation.current.lanes === lanes) return preparation.current.promise;
+      await preparation.current.promise;
+    }
 
     setPreparing(true);
     let modelReportedFailure = false;
     const pending = (async () => {
       const status = await bridge.engineStatus();
-      if (status.ready) return;
+      if (mounted.current) setHardware(status.hardware);
+      if (status.ready && status.concurrency === lanes) return;
 
-      await bridge.prepareModel(progress => {
-        modelReportedFailure = progress.phase === 'error' || progress.phase === 'paused';
-        if (mounted.current) setModelProgress(progress);
-      });
-      await bridge.startEngine(4);
+      if (!status.ready) {
+        await bridge.prepareModel(progress => {
+          modelReportedFailure = progress.phase === 'error' || progress.phase === 'paused';
+          if (mounted.current) setModelProgress(progress);
+        });
+      }
+      await bridge.startEngine(lanes);
     })().catch(error => {
       if (mounted.current && !modelReportedFailure) setError(errorMessage(error));
       throw error;
@@ -54,13 +61,13 @@ export function useGeneration() {
       preparation.current = null;
       if (mounted.current) setPreparing(false);
     });
-    preparation.current = pending;
+    preparation.current = { lanes, promise: pending };
     return pending;
   }, []);
 
   useEffect(() => {
     mounted.current = true;
-    if (bridge.desktop) void prepareEngine().catch(() => {});
+    if (bridge.desktop) void prepareEngine(DEFAULT_CONCURRENCY).catch(() => {});
     return () => {
       mounted.current = false;
       if (timer.current) clearTimeout(timer.current);
@@ -119,7 +126,8 @@ export function useGeneration() {
     setLoading(true);
 
     try {
-      await prepareEngine();
+      // An odd number of distinct requests uses one fewer slot than the even capacity.
+      await prepareEngine(prompts.length + prompts.length % 2);
       if (batch.cancelled) return;
 
       setLoading(false);
@@ -168,11 +176,11 @@ export function useGeneration() {
     }
   };
 
-  const retryModel = async () => {
+  const retryModel = async (lanes: Concurrency) => {
     // The paused/error event may arrive before the original IPC call settles.
-    await preparation.current?.catch(() => {});
+    await preparation.current?.promise.catch(() => {});
     setError('');
-    await prepareEngine().catch(() => {});
+    await prepareEngine(lanes).catch(() => {});
   };
 
   const markPainted = useCallback((id: string) => {
@@ -192,7 +200,7 @@ export function useGeneration() {
   };
 
   return {
-    results, loading, preparing, modelProgress, pauseModel, retryModel, error,
+    results, loading, preparing, modelProgress, pauseModel, retryModel, error, hardware,
     generate, stop, edit, markPainted,
     isGenerating: results.some(isActive),
   };

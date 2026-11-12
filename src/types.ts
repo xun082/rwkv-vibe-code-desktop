@@ -1,8 +1,18 @@
-export type Concurrency = 1 | 2 | 3 | 4;
+export const CONCURRENCY_OPTIONS = [2, 4, 6, 8, 10, 12, 14, 16] as const;
+export const MIN_CONCURRENCY = CONCURRENCY_OPTIONS[0];
+export const DEFAULT_CONCURRENCY = 4;
+export const MAX_CONCURRENCY = CONCURRENCY_OPTIONS[CONCURRENCY_OPTIONS.length - 1];
+export type Concurrency = typeof CONCURRENCY_OPTIONS[number];
+export type ConcurrencyMode = Concurrency | 'auto';
+export interface HardwareProfile {
+  logicalCores: number | null;
+  memoryBytes: number | null;
+  recommendedConcurrency: Concurrency;
+}
 export type JobStatus = 'queued' | 'running' | 'done' | 'cancelled' | 'error';
 export interface InferenceMetrics { outputTokens: number; promptTokens: number; generationMs: number; tps: number; elapsedMs: number; firstTokenMs: number | null }
 export interface PageJob { id: string; prompt: string; title: string; createdAt: number; status: JobStatus; raw: string; html: string; error?: string; incomplete?: boolean; seconds?: number; stats?: InferenceMetrics; startedAt?: number; endedAt?: number; firstRenderMs?: number }
-export interface EngineStatus { ready: boolean; concurrency: number; pending: number; model: string; error: string | null }
+export interface EngineStatus { ready: boolean; concurrency: number; pending: number; model: string; error: string | null; hardware: HardwareProfile }
 export type GenerationEvent =
   | { type: 'queued' | 'started' | 'cancelled'; id: string }
   | { type: 'metrics'; id: string; stats: InferenceMetrics }

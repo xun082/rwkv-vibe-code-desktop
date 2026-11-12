@@ -1,6 +1,6 @@
 {
-  "name": "local-page-studio",
-  "version": "0.2.1",
+  "name": "rwkv-vibe-code",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "scripts": {

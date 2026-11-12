@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One inference POST, 1–4 complete prompts, indexed live HTML + TPS and memory."""
+"""One inference POST, 2–16 prompts, indexed live HTML + TPS and memory."""
 import argparse
 import json
 import os
@@ -33,7 +33,7 @@ class VisibleText(HTMLParser):
 def main():
     global OUT
     cli=argparse.ArgumentParser()
-    cli.add_argument('--concurrency',type=int,choices=(1,2,3,4),default=4)
+    cli.add_argument('--concurrency',type=int,choices=range(2,17,2),default=4)
     cli.add_argument('--max-tokens',type=int,default=12000)
     cli.add_argument('--transport-only',action='store_true')
     cli.add_argument('--runtime-dir',type=Path,default=ROOT/'src-tauri/resources/runtime')
@@ -51,6 +51,7 @@ def main():
     ], cwd=ROOT, encoding='utf-8'))
     prompts_by_key = {example['key']: example['prompt'] for example in examples}
     cases=['创建一个咖啡店官网，店名「慢半拍」，暖白和咖啡棕配色，介绍三款咖啡和营业时间。']+[prompts_by_key[key] for key in ('hotel','museum','saas')]
+    cases += [f'{case} 风格方向：{direction}。' for direction in ('简约杂志', '暖色复古', '明快现代') for case in cases]
     cases=cases[:args.concurrency]
     model_name=json.loads((ROOT/'src-tauri/model-manifest.json').read_text(encoding='utf-8'))['filename']
     windows = os.name == 'nt'
