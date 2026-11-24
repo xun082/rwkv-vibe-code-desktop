@@ -43,11 +43,12 @@ def dependencies(path):
 
 def download_verified(url, destination, expected_sha256):
     request = urllib.request.Request(url, headers={'User-Agent': 'RWKV-Vibe-Code build'})
+    digest = hashlib.sha256()
     with urllib.request.urlopen(request, timeout=60) as response, destination.open('wb') as output:
-        shutil.copyfileobj(response, output)
-    with destination.open('rb') as output:
-        digest = hashlib.file_digest(output, 'sha256').hexdigest()
-    if digest != expected_sha256:
+        while chunk := response.read(1024 * 1024):
+            output.write(chunk)
+            digest.update(chunk)
+    if digest.hexdigest() != expected_sha256:
         raise RuntimeError(f'SHA-256 mismatch for {destination.name}')
 
 

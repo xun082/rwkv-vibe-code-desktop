@@ -11,7 +11,7 @@
 
 ## 本地开发
 
-桌面端支持 macOS Apple Silicon、Windows x64 和 Linux x64。开发需要 Node.js 24、pnpm 11.25.0、Python 3.11+ 和 Rustup。Rust 版本由 `rust-toolchain.toml` 固定。
+桌面端支持 macOS Apple Silicon、Windows x64 和 Linux x64。开发需要 Node.js 24、pnpm 11.25.0、Python 3.10+ 和 Rustup。Rust 版本由 `rust-toolchain.toml` 固定。
 
 macOS 开发需要 Xcode Command Line Tools 和 Homebrew 布局的 llama.cpp **0.9.0（cd959bae9）**。默认从 PATH 查找 `llama-server`，也可用 `LLAMA_SERVER_PATH` 指向匹配版本。
 
