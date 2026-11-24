@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "linux": {
+      "deb": {
+        "depends": ["libgomp1", "libssl3", "libstdc++6 (>= 12)"]
+      }
+    }
+  }
+}

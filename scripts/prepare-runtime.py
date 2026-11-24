@@ -8,6 +8,7 @@ import platform
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import urllib.request
 import zipfile
@@ -17,6 +18,8 @@ RES = ROOT / 'src-tauri/resources'
 RUNTIME = RES / 'runtime'
 WINDOWS_ARCHIVE = 'https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-win-cpu-x64.zip'
 WINDOWS_SHA256 = '98901e327c252875accaf2d1bf364e10e868843b0b63468baad1aa945cdc5da2'
+LINUX_ARCHIVE = 'https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-ubuntu-x64.tar.gz'
+LINUX_SHA256 = '368227edcc229be5f9bed16a2223d79b5e41d0ac2e19bcf5825e82291c060e55'
 LLAMA_LICENSE = 'https://raw.githubusercontent.com/ggml-org/llama.cpp/cd959bae99ff4bed22bef2604f45241c09bbb8c8/LICENSE'
 LLAMA_LICENSE_SHA256 = '94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d'
 WINDOWS_FILES = {
@@ -24,7 +27,10 @@ WINDOWS_FILES = {
     'mtmd.dll', 'ggml.dll', 'ggml-base.dll', 'libomp.dll', 'LICENSE-LLVM-OpenMP',
 }
 CRT_FILES = ('msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
-
+LINUX_RUNTIME_FILES = {
+    'llama-server', 'libllama-server-impl.so', 'libllama.so.0', 'libllama-common.so.0',
+    'libmtmd.so.0', 'libggml.so.0', 'libggml-base.so.0', 'libggml-cpu-x64.so', 'LICENSE',
+}
 
 
 def run(*args):
@@ -84,6 +90,42 @@ def prepare_windows():
     if 'cd959bae9' not in version:
         raise RuntimeError(f'Unexpected llama.cpp version: {version}')
     print(version.strip())
+
+
+def prepare_linux():
+    with tempfile.TemporaryDirectory(prefix='rwkv-runtime-', dir=RES) as temporary:
+        directory = Path(temporary)
+        archive = directory / 'llama.tar.gz'
+        staged = directory / 'runtime'
+        staged.mkdir()
+        download_verified(LINUX_ARCHIVE, archive, LINUX_SHA256)
+        with tarfile.open(archive, 'r:gz') as bundle:
+            members = {
+                Path(member.name).name: member for member in bundle.getmembers()
+                if Path(member.name).parent == Path('llama-b12110')
+            }
+            if missing := LINUX_RUNTIME_FILES - members.keys():
+                raise RuntimeError(f'Missing runtime files: {sorted(missing)}')
+            backends = {name for name in members if re.fullmatch(r'libggml-cpu-[a-z0-9-]+\.so', name)}
+            for name in sorted(LINUX_RUNTIME_FILES | backends):
+                # Materialize the versioned ELF libraries under their SONAME for Tauri.
+                target = staged / name
+                with bundle.extractfile(members[name]) as source, target.open('wb') as output:
+                    shutil.copyfileobj(source, output)
+
+        server = staged / 'llama-server'
+        server.chmod(0o755)
+        check = subprocess.run([str(server), '--version'], cwd=staged,
+                               capture_output=True, text=True)
+        version = (check.stdout + check.stderr).strip()
+        if check.returncode:
+            raise RuntimeError(f'Linux llama-server could not start: {version}')
+        if 'cd959bae9' not in version:
+            raise RuntimeError(f'Unexpected llama.cpp version: {version}')
+        RUNTIME.mkdir(exist_ok=True)
+        for target in staged.iterdir():
+            target.replace(RUNTIME / target.name)
+        print(version)
 
 
 def prepare_macos():
@@ -178,7 +220,12 @@ def prepare_macos():
     print(f'Packaged {len(copied)} runtime binaries; model weights are excluded and installed on demand.')
 
 if __name__ == '__main__':
-    if platform.system() == 'Windows' and platform.machine().lower() in ('amd64', 'x86_64'):
+    system, machine = platform.system(), platform.machine().lower()
+    if system == 'Windows' and machine in ('amd64', 'x86_64'):
         prepare_windows()
-    else:
+    elif system == 'Linux' and machine == 'x86_64':
+        prepare_linux()
+    elif system == 'Darwin' and machine == 'arm64':
         prepare_macos()
+    else:
+        raise SystemExit(f'Unsupported runtime platform: {system} {machine}')

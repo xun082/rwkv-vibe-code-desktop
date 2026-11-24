@@ -71,7 +71,17 @@ fn total_memory() -> Option<u64> {
     (ok != 0 && status.ullTotalPhys > 0).then_some(status.ullTotalPhys)
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn total_memory() -> Option<u64> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let total = meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix("MemTotal:"))?;
+    let kibibytes: u64 = total.split_whitespace().next()?.parse().ok()?;
+    kibibytes.checked_mul(1024)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 fn total_memory() -> Option<u64> {
     None
 }

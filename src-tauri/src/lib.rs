@@ -270,7 +270,7 @@ async fn start_engine(
         .arg(model_arg)
         .args([
             "-ngl",
-            if cfg!(windows) { "0" } else { "99" },
+            if cfg!(target_os = "macos") { "99" } else { "0" },
             "-c",
             &(16384 * concurrency).to_string(),
             "-np",
