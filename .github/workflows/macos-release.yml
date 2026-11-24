@@ -279,12 +279,18 @@ jobs:
           verify_runtime() {
             local resources="$1/usr/lib/RWKV-Vibe-Code"
             local runtime="$resources/runtime"
+            local devices
             test -x "$1/usr/bin/local-page-studio"
             test -f "$resources/model-license/LICENSE"
             test -f "$runtime/LICENSE"
             test -z "$(find "$1" -iname '*.gguf' -print -quit)"
             (cd "$runtime" && ./llama-server --version 2>&1 | grep -F cd959bae9)
-            (cd "$runtime" && ./llama-server --list-devices 2>&1 | grep -F 'loaded CPU backend')
+            devices=$(cd "$runtime" && ./llama-server --verbose --list-devices 2>&1) || {
+              printf '%s\n' "$devices" >&2
+              return 1
+            }
+            printf '%s\n' "$devices"
+            grep -F "loaded CPU backend from $runtime/" <<< "$devices"
           }
 
           verify_runtime "$smoke/deb"
