@@ -93,7 +93,7 @@ export function useGeneration() {
     }
   }
 
-  const generate = async (prompt: string, count: Concurrency) => {
+  const generate = async (prompt: string, count: Concurrency, onQueued: () => void) => {
     if (activeBatch.current) return;
 
     let prompts: string[];
@@ -124,6 +124,7 @@ export function useGeneration() {
     setResults(jobs);
     setError('');
     setLoading(true);
+    onQueued();
 
     try {
       // An odd number of distinct requests uses one fewer slot than the even capacity.
