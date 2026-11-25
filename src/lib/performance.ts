@@ -17,4 +17,5 @@ export function waitingStage(raw: string, tokens = 0) {
   return '正在生成正文，等待首次绘制';
 }
 export const seconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
-export const formatTps = (tps: number | null | undefined) => tps != null && Number.isFinite(tps) ? tps.toFixed(1) : '—';
+export const formatTps = (tps: number | null | undefined) => tps != null && tps > 0 && Number.isFinite(tps) ? tps.toFixed(1) : '—';
+export const formatTokens = (tokens: number | undefined) => tokens != null && tokens > 0 && Number.isFinite(tokens) ? tokens.toLocaleString() : '—';

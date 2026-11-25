@@ -1,26 +1,19 @@
 {
-  "filename": "rwkv7-g1l-1.5b-Q6_K.gguf",
-  "bytes": 1336082592,
-  "sha256": "e7ad47a81a8999694fd02a286b38dffc75927200401eac2812b7c8518a4b87fd",
-  "repository": "shoumenchougou/RWKV7-G1l-1.5B-GGUF",
-  "modelscope_revision": "e87d6d854db33183453036fd2957c600535555f8",
-  "huggingface_revision": "4a535e3ad6e74cf821d72bbc518579b1f27e3ada",
+  "filename": "rwkv7-g1l-1.5b-20261031-ctx34304.pth",
+  "bytes": 3055444605,
+  "sha256": "b0753acefe6c9ea0b4e2e9d60a3c2faa76d712a1d607db187301aae13dadff41",
+  "repository": "BlinkDL/rwkv7-g1",
+  "huggingface_revision": "11e3c50128e479898eee79c48831a95cf3e21d91",
+  "modelscope_revision": "25603b5ae2d543a688c86fdba7dfd1cd71414e36",
+  "license": "Apache-2.0",
   "sources": [
     {
-      "name": "魔搭 ModelScope（国内）",
-      "url": "https://modelscope.cn/models/shoumenchougou/RWKV7-G1l-1.5B-GGUF/resolve/e87d6d854db33183453036fd2957c600535555f8/rwkv7-g1l-1.5b-Q6_K.gguf"
+      "name": "魔搭 ModelScope（RWKV 官方镜像）",
+      "url": "https://modelscope.cn/models/RWKV/rwkv7-g1/resolve/25603b5ae2d543a688c86fdba7dfd1cd71414e36/rwkv7-g1l-1.5b-20261031-ctx34304.pth"
     },
     {
-      "name": "魔搭备用接口（国内）",
-      "url": "https://modelscope.cn/api/v1/models/shoumenchougou/RWKV7-G1l-1.5B-GGUF/repo?Revision=e87d6d854db33183453036fd2957c600535555f8&FilePath=rwkv7-g1l-1.5b-Q6_K.gguf"
-    },
-    {
-      "name": "HF-Mirror 备用",
-      "url": "https://hf-mirror.com/shoumenchougou/RWKV7-G1l-1.5B-GGUF/resolve/4a535e3ad6e74cf821d72bbc518579b1f27e3ada/rwkv7-g1l-1.5b-Q6_K.gguf"
-    },
-    {
-      "name": "Hugging Face 原站",
-      "url": "https://huggingface.co/shoumenchougou/RWKV7-G1l-1.5B-GGUF/resolve/4a535e3ad6e74cf821d72bbc518579b1f27e3ada/rwkv7-g1l-1.5b-Q6_K.gguf"
+      "name": "Hugging Face（BlinkDL 原站）",
+      "url": "https://huggingface.co/BlinkDL/rwkv7-g1/resolve/11e3c50128e479898eee79c48831a95cf3e21d91/rwkv7-g1l-1.5b-20261031-ctx34304.pth"
     }
   ]
 }

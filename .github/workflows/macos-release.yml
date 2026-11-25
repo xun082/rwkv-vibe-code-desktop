@@ -18,7 +18,7 @@ permissions:
 
 jobs:
   build:
-    name: Test and package Apple Silicon DMG
+    name: Verify Apple Silicon development build
     runs-on: macos-15
     timeout-minutes: 30
     outputs:
@@ -54,22 +54,9 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm test
 
-      - name: Prepare pinned llama.cpp runtime
-        shell: bash
-        run: |
-          test "$(uname -m)" = arm64
-          archive="$RUNNER_TEMP/llama-b12110-bin-macos-arm64.tar.gz"
-          curl --fail --silent --show-error --location --retry 3 --output "$archive" https://github.com/ggml-org/llama.cpp/releases/download/b12110/llama-b12110-bin-macos-arm64.tar.gz
-          printf '%s  %s\n' 4f5b8de12e0b9516658ca6a5764c6ffb3d7c659c3dd538556b1413c7b4050662 "$archive" | shasum -a 256 -c -
-          tar -xzf "$archive" -C "$RUNNER_TEMP"
-          src="$RUNNER_TEMP/llama-b12110"
-          runtime="$PWD/src-tauri/resources/runtime"
-          mkdir -p "$runtime"
-          cp -L "$src/llama-server" "$src/libllama-server-impl.dylib" "$src"/libggml*.0.dylib "$src"/lib{llama,llama-common,mtmd}.0.dylib "$src/LICENSE" "$runtime/"
-          "$runtime/llama-server" --version 2>&1 | grep -F cd959bae9
-
       - name: Run Rust tests
         run: |
+          test "$(uname -m)" = arm64
           rustup show active-toolchain
           cargo test --locked --manifest-path src-tauri/Cargo.toml
 
@@ -79,10 +66,8 @@ jobs:
           --config '{"bundle":{"macOS":{"minimumSystemVersion":"13.3"}}}'
           -- --locked
 
-      - name: Verify the DMG and generate checksum
+      - name: Verify the development DMG
         shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           dmg=(src-tauri/target/release/bundle/dmg/*_aarch64.dmg)
           test "${#dmg[@]}" -eq 1
@@ -93,29 +78,14 @@ jobs:
           app=("$mount"/*.app)
           test "${#app[@]}" -eq 1
           test -d "${app[0]}"
+          test -x "${app[0]}/Contents/MacOS/local-page-studio"
           codesign --verify --deep --strict "${app[0]}"
-          test -z "$(find "${app[0]}" -iname '*.gguf' -print -quit)"
-          "${app[0]}/Contents/Resources/runtime/llama-server" --version 2>&1 | grep -F cd959bae9
-          mkdir -p release
-          file="RWKV-Vibe-Code_${VERSION}_aarch64.dmg"
-          cp "${dmg[0]}" "release/$file"
-          cd release
-          shasum -a 256 "$file" > "$file.sha256"
-
-      - name: Upload installer and checksum
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: macos-arm64
-          path: release/
-          if-no-files-found: error
-          retention-days: 14
+          test -z "$(find "${app[0]}" \( -iname '*.gguf' -o -iname '*.pth' -o -iname '*.rwkvq' -o -iname 'llama-server*' -o -iname 'rwkv_lighting_cuda*' \) -print -quit)"
 
   windows:
     name: Test and package Windows x64 installer
     runs-on: windows-2025
     timeout-minutes: 35
-    env:
-      PYTHONUTF8: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -132,9 +102,6 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm test
 
-      - name: Prepare pinned llama.cpp CPU runtime
-        run: python scripts/prepare-runtime.py
-
       - name: Run Rust tests
         run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml
 
@@ -142,7 +109,7 @@ jobs:
         shell: cmd
         run: pnpm exec tauri build --bundles nsis -- --locked
 
-      - name: Install the package and verify its runtime
+      - name: Install and launch the desktop client
         run: |
           $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           $installer = @(Get-ChildItem src-tauri/target/release/bundle/nsis -Filter '*-setup.exe')
@@ -150,69 +117,36 @@ jobs:
           $installDir = Join-Path $env:RUNNER_TEMP 'RWKV-Vibe-Code 安装测试'
           $setup = Start-Process -FilePath $installer[0].FullName -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
           if ($setup.ExitCode -ne 0) { throw "NSIS exited with $($setup.ExitCode)" }
-          $runtimeDir = Join-Path $installDir 'runtime'
-          if (Get-ChildItem $installDir -Filter '*.gguf' -Recurse) { throw 'Installer contains model weights' }
-          $runtimeVersion = & (Join-Path $runtimeDir 'llama-server.exe') --version 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0 -or $runtimeVersion -notmatch 'cd959bae9') { throw "Runtime check failed: $runtimeVersion" }
-          Write-Host $runtimeVersion
-          "RWKV_SMOKE_INSTALL_DIR=$installDir" >> $env:GITHUB_ENV
-          $null = New-Item -ItemType Directory -Path release
-          $file = "RWKV-Vibe-Code_${version}_x64-setup.exe"
-          Copy-Item $installer[0].FullName "release/$file"
-          $digest = (Get-FileHash "release/$file" -Algorithm SHA256).Hash.ToLowerInvariant()
-          ("$digest  $file" + [char]10) | Set-Content "release/$file.sha256" -Encoding ascii -NoNewline
-
-      - name: Install the exact RWKV model with the production downloader
-        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
-        run: |
-          $env:RWKV_SMOKE_MODEL_DIR = Join-Path $env:APPDATA 'studio.moment.localpage/models'
-          cargo test --release --locked --manifest-path src-tauri/Cargo.toml prepare_production_model_for_smoke_test -- --ignored --nocapture
-
-      - name: Launch installed desktop app and verify model startup
-        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
-        run: |
-          $desktop = @(Get-ChildItem $env:RWKV_SMOKE_INSTALL_DIR -File -Filter '*.exe' | Where-Object Name -NotMatch 'uninstall')
+          $inferenceFiles = Get-ChildItem $installDir -File -Recurse | Where-Object Name -Match '\.(gguf|pth|rwkvq)$|^(llama-server|rwkv_lighting_cuda)'
+          if ($inferenceFiles) { throw 'Installer contains inference server files or model weights' }
+          $desktop = @(Get-ChildItem $installDir -File -Filter '*.exe' | Where-Object Name -NotMatch 'uninstall')
           if ($desktop.Count -ne 1) { throw 'Expected one installed desktop executable' }
           $app = Start-Process -FilePath $desktop[0].FullName -PassThru
-          $engine = $null
           try {
             $ready = $false
-            for ($i = 0; $i -lt 90; $i++) {
+            for ($i = 0; $i -lt 45; $i++) {
               $app.Refresh()
               if ($app.HasExited) { throw "Desktop app exited with $($app.ExitCode)" }
-              $engine = Get-CimInstance Win32_Process -Filter "ParentProcessId=$($app.Id) AND Name='llama-server.exe'"
-              if ($engine -and $engine.CommandLine -match '--port\s+(\d+)') {
-                $port = $Matches[1]
-                try {
-                  $health = Invoke-RestMethod "http://127.0.0.1:$port/health" -TimeoutSec 2
-                  if ($health.status -eq 'ok') { $ready = $true; break }
-                } catch {
-                  # The server returns 503 until the model is loaded.
-                }
+              if ($app.MainWindowHandle -ne [IntPtr]::Zero -and $app.MainWindowTitle -eq 'RWKV-Vibe-Code') {
+                $ready = $true
+                break
               }
               Start-Sleep -Seconds 1
             }
-            if (-not $ready) { throw 'The installed desktop app did not load the model' }
-            Write-Host 'Installed desktop app loaded the RWKV model.'
+            if (-not $ready) { throw 'The installed desktop client did not open its main window' }
+            Write-Host 'Installed desktop client opened its main window.'
           } finally {
             $app.Refresh()
             if (-not $app.HasExited) {
               if ($app.CloseMainWindow()) { $null = $app.WaitForExit(10000) }
               if (-not $app.HasExited) { Stop-Process -Id $app.Id -ErrorAction SilentlyContinue }
             }
-            if ($engine) { Stop-Process -Id $engine.ProcessId -ErrorAction SilentlyContinue }
           }
-
-      - name: Verify four concurrent CPU streams from the installed runtime
-        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
-        run: |
-          $name = (Get-Content src-tauri/model-manifest.json -Raw -Encoding utf8 | ConvertFrom-Json).filename
-          $model = Join-Path $env:APPDATA "studio.moment.localpage/models/$name"
-          $unicodeDir = Join-Path (Split-Path $model) '模型测试'
-          $null = New-Item -ItemType Directory -Path $unicodeDir
-          $env:RWKV_MODEL_PATH = Join-Path $unicodeDir $name
-          $null = New-Item -ItemType HardLink -Path $env:RWKV_MODEL_PATH -Target $model
-          python scripts/test-live-metrics.py --runtime-dir (Join-Path $env:RWKV_SMOKE_INSTALL_DIR 'runtime') --concurrency 4 --max-tokens 128 --transport-only
+          $null = New-Item -ItemType Directory -Path release
+          $file = "RWKV-Vibe-Code_${version}_x64-setup.exe"
+          Copy-Item $installer[0].FullName "release/$file"
+          $digest = (Get-FileHash "release/$file" -Algorithm SHA256).Hash.ToLowerInvariant()
+          ("$digest  $file" + [char]10) | Set-Content "release/$file.sha256" -Encoding ascii -NoNewline
 
       - name: Upload Windows installer and checksum
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -240,16 +174,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential file libwebkit2gtk-4.1-dev \
-            libxdo-dev libssl3 libgomp1 libayatana-appindicator3-dev librsvg2-dev libfuse2 xauth xvfb xdotool
+            libxdo-dev libayatana-appindicator3-dev librsvg2-dev libfuse2 xauth xvfb xdotool
 
       - name: Install frontend dependencies and test
         run: |
           npm install --global pnpm@11.25.0
           pnpm install --frozen-lockfile
           pnpm test
-
-      - name: Prepare pinned llama.cpp CPU runtime
-        run: pnpm prepare:runtime
 
       - name: Run Rust tests
         run: cargo test --release --locked --manifest-path src-tauri/Cargo.toml
@@ -276,25 +207,13 @@ jobs:
           image=$(realpath "${appimage[0]}")
           (cd "$smoke" && "$image" --appimage-extract > /dev/null)
 
-          verify_runtime() {
-            local resources="$1/usr/lib/RWKV-Vibe-Code"
-            local runtime="$resources/runtime"
-            local devices
+          verify_client() {
             test -x "$1/usr/bin/local-page-studio"
-            test -f "$resources/model-license/LICENSE"
-            test -f "$runtime/LICENSE"
-            test -z "$(find "$1" -iname '*.gguf' -print -quit)"
-            (cd "$runtime" && ./llama-server --version 2>&1 | grep -F cd959bae9)
-            devices=$(cd "$runtime" && ./llama-server --verbose --list-devices 2>&1) || {
-              printf '%s\n' "$devices" >&2
-              return 1
-            }
-            printf '%s\n' "$devices"
-            grep -F "loaded CPU backend from $runtime/" <<< "$devices"
+            test -z "$(find "$1" \( -iname '*.gguf' -o -iname '*.pth' -o -iname '*.rwkvq' -o -iname 'llama-server*' -o -iname 'rwkv_lighting_cuda*' \) -print -quit)"
           }
 
-          verify_runtime "$smoke/deb"
-          LD_LIBRARY_PATH="$smoke/squashfs-root/usr/lib" verify_runtime "$smoke/squashfs-root"
+          verify_client "$smoke/deb"
+          verify_client "$smoke/squashfs-root"
 
           for desktop in "$smoke/deb/usr/bin/local-page-studio" "$smoke/squashfs-root/AppRun"; do
             WEBKIT_DISABLE_DMABUF_RENDERER=1 xvfb-run -a bash -e -c '
@@ -324,7 +243,7 @@ jobs:
           retention-days: 14
 
   publish:
-    name: Publish desktop prerelease
+    name: Publish Windows and Linux prerelease
     needs: [build, windows, linux]
     if: >-
       (github.event_name == 'push' && github.ref_type == 'tag') ||
@@ -336,11 +255,6 @@ jobs:
     concurrency:
       group: desktop-release-${{ needs.build.outputs.version }}
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: macos-arm64
-          path: release
-
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-x64
@@ -361,7 +275,6 @@ jobs:
         run: |
           tag="v$VERSION"
           files=(
-            "RWKV-Vibe-Code_${VERSION}_aarch64.dmg"
             "RWKV-Vibe-Code_${VERSION}_x64-setup.exe"
             "RWKV-Vibe-Code_${VERSION}_amd64.deb"
             "RWKV-Vibe-Code_${VERSION}_amd64.AppImage"
@@ -376,4 +289,6 @@ jobs:
           else
             ref_args=(--target "$GITHUB_SHA")
           fi
-          gh release create "$tag" "${ref_args[@]}" --prerelease --title "RWKV-Vibe-Code $tag" --notes 'Apple Silicon (macOS 13.3+), Windows x64 (CPU), and Linux x64 (CPU, DEB and AppImage). macOS is ad-hoc signed and Windows is unsigned. The local model is installed on first launch. Default concurrency is 4, with even tiers from 2 to 16.' "${files[@]}" "${checksums[@]}"
+          gh release create "$tag" "${ref_args[@]}" --prerelease --title "RWKV-Vibe-Code $tag" \
+            --notes 'Installers for Windows x64 (NSIS) and Linux x64 (DEB and AppImage). The setup screen downloads Albatross v1.8.15 (CUDA 12.9) and RWKV-7 model weights for local generation. Use a supported NVIDIA GPU and driver. The Windows installer is unsigned.' \
+            "${files[@]}" "${checksums[@]}"

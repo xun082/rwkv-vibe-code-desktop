@@ -1,4 +1,4 @@
-//! Model weights live in Application Support, never inside the signed app bundle.
+//! Install and verify the pinned RWKV-7 checkpoint in the application data directory.
 use futures_util::StreamExt;
 use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant, SystemTime},
 };
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -49,6 +49,9 @@ struct Fingerprint {
 }
 fn fingerprint(path: &Path) -> Result<Fingerprint, String> {
     let m = std::fs::metadata(path).map_err(|e| format!("无法读取模型文件：{e}"))?;
+    if !m.is_file() {
+        return Err("模型路径不是文件".into());
+    }
     Ok(Fingerprint {
         path: path.into(),
         bytes: m.len(),
@@ -113,8 +116,7 @@ async fn verify(path: PathBuf, spec: ModelSpec, token: CancellationToken) -> Res
 pub struct ModelStore {
     pub spec: ModelSpec,
     gate: tokio::sync::Mutex<()>,
-    active: Mutex<Option<CancellationToken>>,
-    verified: Mutex<Option<Fingerprint>>,
+    checked: Mutex<Option<(Fingerprint, bool)>>,
     client: Client,
 }
 impl ModelStore {
@@ -123,7 +125,6 @@ impl ModelStore {
             ModelSpec::production(),
             Client::builder()
                 .https_only(true)
-                .no_proxy()
                 .connect_timeout(Duration::from_secs(10))
                 .read_timeout(Duration::from_secs(30))
                 .user_agent(concat!(
@@ -139,43 +140,83 @@ impl ModelStore {
         Self {
             spec,
             gate: tokio::sync::Mutex::new(()),
-            active: Mutex::new(None),
-            verified: Mutex::new(None),
+            checked: Mutex::new(None),
             client,
         }
     }
-    pub fn cancel(&self) {
-        if let Some(token) = self.active.lock().unwrap().as_ref() {
-            token.cancel();
-        }
+    pub fn appears_installed(&self, directory: &Path) -> bool {
+        let Ok(current) = fingerprint(&directory.join(&self.spec.filename)) else {
+            return false;
+        };
+        current.bytes == self.spec.bytes
+            && self
+                .checked
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_none_or(|(previous, valid)| {
+                    previous.path != current.path || (*valid && *previous == current)
+                })
     }
-    pub async fn installed_model(&self, directory: &Path) -> Result<PathBuf, String> {
+    pub async fn installed_model(
+        &self,
+        directory: &Path,
+        token: &CancellationToken,
+    ) -> Result<PathBuf, String> {
+        self.find_installed(directory, token)
+            .await?
+            .ok_or_else(|| "本地模型尚未安装或校验未通过，请先完成模型下载".into())
+    }
+    async fn find_installed(
+        &self,
+        directory: &Path,
+        token: &CancellationToken,
+    ) -> Result<Option<PathBuf>, String> {
+        check_cancel(token)?;
         let path = directory.join(&self.spec.filename);
-        if let Ok(current) = fingerprint(&path) {
-            if self.verified.lock().unwrap().as_ref() == Some(&current) {
-                return Ok(path);
+        let current = fingerprint(&path).ok();
+        if let Some((previous, valid)) = self.checked.lock().unwrap().as_ref() {
+            if current.as_ref() == Some(previous) {
+                return Ok(valid.then_some(path));
             }
         }
-        if verify(path.clone(), self.spec.clone(), CancellationToken::new()).await? {
-            *self.verified.lock().unwrap() = Some(fingerprint(&path)?);
-            Ok(path)
-        } else {
-            Err("本地模型尚未安装或校验未通过，请先完成模型下载".into())
+        let valid = verify(path.clone(), self.spec.clone(), token.clone()).await?;
+        check_cancel(token)?;
+        if let Ok(after) = fingerprint(&path) {
+            if current.as_ref() == Some(&after) {
+                *self.checked.lock().unwrap() = Some((after, valid));
+                return Ok(valid.then_some(path));
+            }
         }
+        Ok(None)
     }
-    pub async fn prepare(
+    #[cfg(test)]
+    async fn prepare(
         &self,
         directory: PathBuf,
         existing: Vec<PathBuf>,
         notify: Notify,
     ) -> Result<PathBuf, String> {
-        let _gate = self.gate.lock().await;
-        let token = CancellationToken::new();
-        *self.active.lock().unwrap() = Some(token.clone());
-        let result = self
-            .prepare_inner(&directory, &existing, &notify, &token)
-            .await;
-        *self.active.lock().unwrap() = None;
+        self.prepare_with_cancel(directory, existing, notify, CancellationToken::new())
+            .await
+    }
+    pub async fn prepare_with_cancel(
+        &self,
+        directory: PathBuf,
+        existing: Vec<PathBuf>,
+        notify: Notify,
+        token: CancellationToken,
+    ) -> Result<PathBuf, String> {
+        let result = async {
+            let _gate = tokio::select! {
+                _ = token.cancelled() => return Err("模型准备已暂停".into()),
+                gate = self.gate.lock() => gate,
+            };
+            check_cancel(&token)?;
+            self.prepare_inner(&directory, &existing, &notify, &token)
+                .await
+        }
+        .await;
         if let Err(error) = &result {
             emit(
                 &self.spec,
@@ -225,7 +266,7 @@ impl ModelStore {
             "正在检查本地模型",
             0.0,
         );
-        if self.installed_model(directory).await.is_ok() {
+        if let Some(installed) = self.find_installed(directory, token).await? {
             emit(
                 &self.spec,
                 notify,
@@ -235,11 +276,11 @@ impl ModelStore {
                 "本地模型已就绪",
                 0.0,
             );
-            return Ok(path);
+            return Ok(installed);
         }
         check_cancel(token)?;
         for candidate in existing {
-            if candidate == &path || !candidate.is_file() {
+            if candidate == &path || candidate == &part || !candidate.is_file() {
                 continue;
             }
             emit(
@@ -261,7 +302,7 @@ impl ModelStore {
                     "正在复用已有模型，无需重新下载",
                     0.0,
                 );
-                tokio::fs::copy(candidate, &part).await.map_err(io_error)?;
+                copy_partial(candidate, &part, token).await?;
                 if self.finish(&part, &path, notify, token).await? {
                     return Ok(path);
                 }
@@ -323,7 +364,7 @@ impl ModelStore {
         }
         check_cancel(token)?;
         tokio::fs::rename(part, path).await.map_err(io_error)?;
-        *self.verified.lock().unwrap() = Some(fingerprint(path)?);
+        *self.checked.lock().unwrap() = Some((fingerprint(path)?, true));
         emit(
             &self.spec,
             notify,
@@ -357,7 +398,7 @@ impl ModelStore {
         );
         let response = tokio::select! {
             _=token.cancelled()=>return Err("模型准备已暂停".into()),
-            response=self.client.get(&source.url).header(header::RANGE,format!("bytes={offset}-{}",self.spec.bytes-1)).header(header::ACCEPT_ENCODING,"identity").send()=>response.map_err(|e|format!("连接失败：{e}"))?,
+            response=self.client.get(&source.url).header(header::RANGE,format!("bytes={offset}-{}",self.spec.bytes-1)).header(header::ACCEPT_ENCODING,"identity").send()=>response.map_err(|error|format!("连接失败：{}",error.without_url()))?,
         };
         let status = response.status();
         if status == StatusCode::PARTIAL_CONTENT {
@@ -409,7 +450,7 @@ impl ModelStore {
                 Err(error) => {
                     // Finish pending file writes before the next attempt reads the offset.
                     file.flush().await.map_err(io_error)?;
-                    return Err(format!("网络中断：{error}"));
+                    return Err(format!("网络中断：{}", error.without_url()));
                 }
             };
             if offset + bytes.len() as u64 > self.spec.bytes {
@@ -438,6 +479,33 @@ impl ModelStore {
         }
         Ok(())
     }
+}
+async fn copy_partial(
+    source: &Path,
+    destination: &Path,
+    token: &CancellationToken,
+) -> Result<(), String> {
+    check_cancel(token)?;
+    let mut input = tokio::fs::File::open(source)
+        .await
+        .map_err(|e| format!("无法读取已有模型：{e}"))?;
+    let mut output = tokio::fs::File::create(destination)
+        .await
+        .map_err(io_error)?;
+    let mut buffer = vec![0; 4 * 1024 * 1024];
+    while !token.is_cancelled() {
+        let len = input
+            .read(&mut buffer)
+            .await
+            .map_err(|e| format!("无法读取已有模型：{e}"))?;
+        if len == 0 {
+            break;
+        }
+        output.write_all(&buffer[..len]).await.map_err(io_error)?;
+    }
+    output.flush().await.map_err(io_error)?;
+    check_cancel(token)?;
+    output.sync_all().await.map_err(io_error)
 }
 async fn partial_length(directory: &Path, spec: &ModelSpec) -> u64 {
     tokio::fs::metadata(directory.join(format!("{}.part", spec.filename)))
@@ -484,7 +552,7 @@ mod tests {
     }
     fn spec(bytes: &[u8], urls: Vec<String>) -> ModelSpec {
         ModelSpec {
-            filename: "model.gguf".into(),
+            filename: "model.pth".into(),
             bytes: bytes.len() as u64,
             sha256: format!("{:x}", Sha256::digest(bytes)),
             sources: urls
@@ -505,6 +573,7 @@ mod tests {
         Full,
         BadRange,
         Corrupt,
+        Interrupted,
         Slow,
     }
     fn server(
@@ -565,6 +634,8 @@ mod tests {
                         }
                         std::thread::sleep(Duration::from_millis(10));
                     }
+                } else if matches!(plan, Reply::Interrupted) {
+                    socket.write_all(&payload[..payload.len() / 2]).unwrap();
                 } else {
                     let _ = socket.write_all(&payload);
                 }
@@ -577,16 +648,16 @@ mod tests {
     }
     #[tokio::test]
     async fn resumes_exact_range_then_reuses_cache_offline() {
-        let data = b"GGUF0123456789abcdef".to_vec();
+        let data = b"PTH0123456789abcdef".to_vec();
         let (url, offsets, thread) = server(data.clone(), vec![Reply::Range]);
         let store = ModelStore::new(spec(&data, vec![url]), client());
         let root = root();
-        std::fs::write(root.join("model.gguf.part"), &data[..7]).unwrap();
+        std::fs::write(root.join("model.pth.part"), &data[..7]).unwrap();
         let path = store.prepare(root.clone(), vec![], notify()).await.unwrap();
         thread.join().unwrap();
         assert_eq!(*offsets.lock().unwrap(), vec![7]);
         assert_eq!(std::fs::read(&path).unwrap(), data);
-        assert!(!root.join("model.gguf.part").exists());
+        assert!(!root.join("model.pth.part").exists());
         let fresh = ModelStore::new(store.spec.clone(), client());
         assert_eq!(
             fresh.prepare(root.clone(), vec![], notify()).await.unwrap(),
@@ -596,11 +667,11 @@ mod tests {
     }
     #[tokio::test]
     async fn ignored_range_restarts_instead_of_appending_duplicate_bytes() {
-        let data = b"GGUF complete file".to_vec();
+        let data = b"PTH complete file".to_vec();
         let (url, _, thread) = server(data.clone(), vec![Reply::Full]);
         let store = ModelStore::new(spec(&data, vec![url]), client());
         let root = root();
-        std::fs::write(root.join("model.gguf.part"), b"wrong").unwrap();
+        std::fs::write(root.join("model.pth.part"), b"wrong").unwrap();
         let path = store.prepare(root.clone(), vec![], notify()).await.unwrap();
         thread.join().unwrap();
         assert_eq!(std::fs::read(path).unwrap(), data);
@@ -608,14 +679,14 @@ mod tests {
     }
     #[tokio::test]
     async fn bad_ranges_do_not_corrupt_the_prefix_and_fail_over() {
-        let data = b"GGUF range safe file".to_vec();
+        let data = b"PTH range safe file".to_vec();
         let (url, offsets, thread) = server(
             data.clone(),
             vec![Reply::BadRange, Reply::BadRange, Reply::Range],
         );
         let store = ModelStore::new(spec(&data, vec![url.clone(), url]), client());
         let root = root();
-        std::fs::write(root.join("model.gguf.part"), &data[..6]).unwrap();
+        std::fs::write(root.join("model.pth.part"), &data[..6]).unwrap();
         let path = store.prepare(root.clone(), vec![], notify()).await.unwrap();
         thread.join().unwrap();
         assert_eq!(*offsets.lock().unwrap(), vec![6, 6, 6]);
@@ -623,8 +694,20 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
     #[tokio::test]
+    async fn interrupted_download_retries_from_the_saved_offset() {
+        let data = b"PTH original checkpoint bytes".to_vec();
+        let (url, offsets, thread) = server(data.clone(), vec![Reply::Interrupted, Reply::Range]);
+        let store = ModelStore::new(spec(&data, vec![url]), client());
+        let root = root();
+        let path = store.prepare(root.clone(), vec![], notify()).await.unwrap();
+        thread.join().unwrap();
+        assert_eq!(*offsets.lock().unwrap(), vec![0, (data.len() / 2) as u64]);
+        assert_eq!(std::fs::read(path).unwrap(), data);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
     async fn hash_mismatch_is_never_installed_and_next_source_can_recover() {
-        let data = b"GGUF original data".to_vec();
+        let data = b"PTH original data".to_vec();
         let (url, offsets, thread) = server(data.clone(), vec![Reply::Corrupt, Reply::Range]);
         let store = ModelStore::new(spec(&data, vec![url.clone(), url]), client());
         let root = root();
@@ -638,11 +721,12 @@ mod tests {
     async fn pause_keeps_a_resumable_partial_file() {
         let data = vec![42; 65536];
         let (url, offsets, thread) = server(data.clone(), vec![Reply::Slow, Reply::Range]);
-        let store = Arc::new(ModelStore::new(spec(&data, vec![url]), client()));
+        let store = ModelStore::new(spec(&data, vec![url]), client());
         let root = root();
-        let cancel = store.clone();
+        let token = CancellationToken::new();
+        let cancel = token.clone();
         let result = store
-            .prepare(
+            .prepare_with_cancel(
                 root.clone(),
                 vec![],
                 Arc::new(move |p| {
@@ -650,14 +734,15 @@ mod tests {
                         cancel.cancel();
                     }
                 }),
+                token,
             )
             .await;
         assert!(result.is_err());
-        let partial = std::fs::metadata(root.join("model.gguf.part"))
+        let partial = std::fs::metadata(root.join("model.pth.part"))
             .unwrap()
             .len();
         assert!(partial > 0 && partial < data.len() as u64);
-        assert!(!root.join("model.gguf").exists());
+        assert!(!root.join("model.pth").exists());
         let path = store.prepare(root.clone(), vec![], notify()).await.unwrap();
         thread.join().unwrap();
         assert_eq!(offsets.lock().unwrap()[1], partial);
@@ -666,9 +751,9 @@ mod tests {
     }
     #[tokio::test]
     async fn existing_local_model_is_imported_without_network() {
-        let data = b"GGUF existing local model";
+        let data = b"PTH existing local model";
         let original = root();
-        let source = original.join("existing.gguf");
+        let source = original.join("existing.pth");
         std::fs::write(&source, data).unwrap();
         let root = root();
         let store = ModelStore::new(
@@ -684,6 +769,101 @@ mod tests {
         std::fs::remove_dir_all(original).unwrap();
         std::fs::remove_dir_all(root).unwrap();
     }
+    #[tokio::test]
+    async fn shared_cancel_reports_paused_without_removing_complete_partial_file() {
+        let data = b"PTH downloaded before cancellation";
+        let root = root();
+        let path = root.join("model.pth.part");
+        std::fs::write(&path, data).unwrap();
+        let store = ModelStore::new(spec(data, vec![]), client());
+        let token = CancellationToken::new();
+        let cancel = token.clone();
+        let progress = Arc::new(Mutex::new(Vec::new()));
+        let recorded = progress.clone();
+        let result = store
+            .prepare_with_cancel(
+                root.clone(),
+                vec![],
+                Arc::new(move |p| {
+                    if p.phase == "verifying" {
+                        cancel.cancel();
+                    }
+                    recorded.lock().unwrap().push(p.phase);
+                }),
+                token,
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(progress.lock().unwrap().last(), Some(&"paused"));
+        assert_eq!(std::fs::read(path).unwrap(), data);
+        assert!(!store.appears_installed(&root));
+        assert_eq!(
+            std::fs::read(store.prepare(root.clone(), vec![], notify()).await.unwrap()).unwrap(),
+            data
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn cached_model_is_rechecked_after_its_file_revision_changes() {
+        let data = b"PTH original bytes";
+        let root = root();
+        let path = root.join("model.pth");
+        let store = ModelStore::new(spec(data, vec![]), client());
+        let token = CancellationToken::new();
+        assert!(!store.appears_installed(&root));
+        std::fs::write(&path, data).unwrap();
+        assert!(store.appears_installed(&root));
+        assert_eq!(store.installed_model(&root, &token).await.unwrap(), path);
+        let changed = File::options().write(true).open(&path).unwrap();
+        (&changed).write_all(&vec![b'X'; data.len()]).unwrap();
+        changed
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(3600)),
+            )
+            .unwrap();
+        assert!(!store.appears_installed(&root));
+        assert!(store.installed_model(&root, &token).await.is_err());
+        drop(changed);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[tokio::test]
+    async fn rejected_installed_model_is_available_for_repair_in_the_same_session() {
+        let data = b"PTH approved data";
+        let root = root();
+        let path = root.join("model.pth");
+        let store = ModelStore::new(spec(data, vec![]), client());
+        std::fs::write(path, vec![b'X'; data.len()]).unwrap();
+        assert!(store.appears_installed(&root));
+        assert!(store
+            .installed_model(&root, &CancellationToken::new())
+            .await
+            .is_err());
+        assert!(!store.appears_installed(&root));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn production_manifest_pins_the_original_albatross_checkpoint() {
+        let spec = ModelSpec::production();
+        assert_eq!(spec.filename, "rwkv7-g1l-1.5b-20261031-ctx34304.pth");
+        assert_eq!(spec.bytes, 3_055_444_605);
+        assert_eq!(
+            spec.sha256,
+            "b0753acefe6c9ea0b4e2e9d60a3c2faa76d712a1d607db187301aae13dadff41"
+        );
+        assert!(spec
+            .sources
+            .iter()
+            .all(|source| source.url.starts_with("https://")));
+        assert!(spec
+            .sources
+            .iter()
+            .any(|source| source.url.contains("modelscope.cn/")));
+        assert!(spec
+            .sources
+            .iter()
+            .any(|source| source.url.contains("huggingface.co/")));
+    }
     #[test]
     fn validates_range_start_size_and_end() {
         assert!(validate_range(Some("bytes 4-9/10"), 4, 10).is_ok());
@@ -698,7 +878,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "downloads the production model for the installer smoke test"]
+    #[ignore = "downloads the 3.06 GB production checkpoint for a live installer test"]
     async fn prepare_production_model_for_smoke_test() {
         let directory = PathBuf::from(
             std::env::var_os("RWKV_SMOKE_MODEL_DIR").expect("set RWKV_SMOKE_MODEL_DIR"),
@@ -717,75 +897,5 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(std::fs::metadata(path).unwrap().len(), store.spec.bytes);
-    }
-
-    #[tokio::test]
-    #[ignore = "downloads the real 1.34 GB production model; run explicitly"]
-    async fn real_domestic_download_and_cache_reuse() {
-        let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../local-model-results/download-sources/real-model-cache");
-        let mut production = ModelSpec::production();
-        production
-            .sources
-            .retain(|source| source.url.starts_with("https://modelscope.cn/"));
-        let store = ModelStore::new(
-            production,
-            Client::builder()
-                .user_agent(concat!(
-                    "RWKVVibeCode/",
-                    env!("CARGO_PKG_VERSION"),
-                    " model-installer"
-                ))
-                .https_only(true)
-                .no_proxy()
-                .connect_timeout(Duration::from_secs(10))
-                .read_timeout(Duration::from_secs(30))
-                .build()
-                .unwrap(),
-        );
-        let started = Instant::now();
-        let milestones = Arc::new(Mutex::new(Vec::<Progress>::new()));
-        let observed = milestones.clone();
-        let percent = Arc::new(Mutex::new(0u64));
-        let path = store
-            .prepare(
-                directory.clone(),
-                vec![],
-                Arc::new(move |p| {
-                    let n = p.downloaded_bytes * 100 / p.total_bytes;
-                    let mut last = percent.lock().unwrap();
-                    if p.phase != "downloading" || n >= *last + 10 {
-                        eprintln!(
-                            "MODEL {} {}% {:.1} MB/s {}",
-                            p.phase,
-                            n,
-                            p.speed_bps / 1048576.0,
-                            p.source
-                        );
-                        observed.lock().unwrap().push(p);
-                        *last = n;
-                    }
-                }),
-            )
-            .await
-            .unwrap();
-        assert!(
-            verify(path.clone(), store.spec.clone(), CancellationToken::new())
-                .await
-                .unwrap()
-        );
-        let downloaded_seconds = started.elapsed().as_secs_f64();
-        let cached = ModelStore::new(
-            ModelSpec {
-                sources: vec![],
-                ..store.spec.clone()
-            },
-            client(),
-        );
-        cached.prepare(directory, vec![], notify()).await.unwrap();
-        let report = serde_json::json!({"path":path,"bytes":store.spec.bytes,"sha256":store.spec.sha256,"source":"ModelScope China only","downloadSeconds":downloaded_seconds,"cacheReuseWithoutNetwork":true,"milestones":*milestones.lock().unwrap()});
-        let report_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../local-model-results/download-sources/real-install-validation.json");
-        std::fs::write(report_path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     }
 }

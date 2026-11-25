@@ -12,13 +12,19 @@ export interface HardwareProfile {
 export type JobStatus = 'queued' | 'running' | 'done' | 'cancelled' | 'error';
 export interface InferenceMetrics { outputTokens: number; promptTokens: number; generationMs: number; tps: number; elapsedMs: number; firstTokenMs: number | null }
 export interface PageJob { id: string; prompt: string; title: string; createdAt: number; status: JobStatus; raw: string; html: string; error?: string; incomplete?: boolean; seconds?: number; stats?: InferenceMetrics; startedAt?: number; endedAt?: number; firstRenderMs?: number }
-export interface EngineStatus { ready: boolean; concurrency: number; pending: number; model: string; error: string | null; hardware: HardwareProfile }
-export type GenerationEvent =
-  | { type: 'queued' | 'started' | 'cancelled'; id: string }
-  | { type: 'metrics'; id: string; stats: InferenceMetrics }
-  | { type: 'delta'; id: string; text: string }
-  | { type: 'done'; id: string; html: string; incomplete: boolean; seconds: number }
-  | { type: 'error'; id: string; message: string };
+export interface EngineStatus {
+  ready: boolean;
+  concurrency: number;
+  pending: number;
+  localSupported: boolean;
+  canPrepare: boolean;
+  modelInstalled: boolean;
+  runtimeInstalled: boolean;
+  model: string;
+  error: string | null;
+  hardware: HardwareProfile;
+}
+export type ModelSetupStage = 'idle' | 'checking' | 'installing' | 'starting';
 export interface ModelProgress {
   phase: 'checking' | 'downloading' | 'importing' | 'verifying' | 'ready' | 'paused' | 'error';
   downloadedBytes: number;
@@ -27,3 +33,11 @@ export interface ModelProgress {
   source: string;
   message: string;
 }
+export type PageGenerationEvent =
+  | { type: 'queued' | 'started' | 'cancelled'; id: string }
+  | { type: 'metrics'; id: string; stats: InferenceMetrics }
+  | { type: 'delta'; id: string; text: string }
+  | { type: 'done'; id: string; html: string; incomplete: boolean; seconds: number }
+  | { type: 'error'; id: string; message: string };
+export type GenerationEvent = PageGenerationEvent
+  | { type: 'batchMetrics'; id: string; stats: InferenceMetrics };

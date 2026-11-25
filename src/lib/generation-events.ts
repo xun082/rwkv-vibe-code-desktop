@@ -1,5 +1,5 @@
-import type { GenerationEvent, PageJob } from '../types';
-export function applyGenerationEvent(job: PageJob, event: GenerationEvent, now: number): PageJob {
+import type { PageGenerationEvent, PageJob } from '../types';
+export function applyGenerationEvent(job: PageJob, event: PageGenerationEvent, now: number): PageJob {
   switch (event.type) {
     case 'queued': return { ...job, status: 'queued' };
     case 'started': return { ...job, status: 'running', startedAt: job.startedAt ?? now };

@@ -10,6 +10,7 @@ interface Props {
   onChange: (value: string) => void;
   onSubmit: () => void;
   disabled: boolean;
+  ready: boolean;
   compact?: boolean;
   count: ConcurrencyMode;
   onCountChange: (count: ConcurrencyMode) => void;
@@ -17,19 +18,17 @@ interface Props {
   inputRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
-export default function PromptInput({ value, onChange, onSubmit, disabled, compact = false, count, onCountChange, hardware, inputRef }: Props) {
+export default function PromptInput({ value, onChange, onSubmit, disabled, ready, compact = false, count, onCountChange, hardware, inputRef }: Props) {
   const internalInput = useRef<HTMLTextAreaElement>(null);
   const input = inputRef || internalInput;
   const promptCount = splitPromptInput(value).length;
   const recommended = hardware?.recommendedConcurrency ?? DEFAULT_CONCURRENCY;
-  const recommendation = hardware?.logicalCores && hardware.memoryBytes
-    ? `本机 ${hardware.logicalCores} 个逻辑处理器、${(hardware.memoryBytes / 2 ** 30).toFixed(1)} GiB 内存，建议 ${recommended} 路`
-    : `自动档：${recommended} 路`;
+  const recommendation = hardware ? `Albatross 当前建议 ${recommended} 路` : `模型启动后将按本机 GPU 容量调整默认的 ${recommended} 路`;
   const requiredSlots = promptCount + promptCount % 2;
   const parallelismHint = promptCount > 1 && requiredSlots <= MAX_CONCURRENCY
     ? `${promptCount} 条需求需至少选择 ${requiredSlots} 路。${recommendation}`
     : recommendation;
-  const canSubmit = !disabled && !!value.trim();
+  const canSubmit = ready && !disabled && !!value.trim();
 
   useLayoutEffect(() => {
     if (!input.current) return;
@@ -63,7 +62,7 @@ export default function PromptInput({ value, onChange, onSubmit, disabled, compa
         </SelectContent>
       </Select>
       <Button type="submit" size={compact ? 'icon-sm' : 'icon'} disabled={!canSubmit}
-        aria-label="生成网页" title="生成网页"><ArrowUp size={compact ? 16 : 18} aria-hidden="true"/></Button>
+        aria-label="生成网页" title={ready ? '生成网页' : '本地模型尚未就绪'}><ArrowUp size={compact ? 16 : 18} aria-hidden="true"/></Button>
     </div>
   </form>;
 }

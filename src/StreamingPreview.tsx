@@ -5,7 +5,7 @@ import tailwindSource from './vendor/tailwind-play-3.4.17.js?raw';
 import { installPreviewControls, installStreamRuntime } from './preview-runtime';
 import { finalPreviewDocument, streamingDocument } from './preview';
 import type { PageJob } from './types';
-import { waitingStage, seconds, formatTps } from './lib/performance';
+import { waitingStage, seconds } from './lib/performance';
 import { PreviewQueue } from './lib/preview-queue';
 
 interface Props { html: string; streaming?: boolean; queued?: boolean; label?: string; logicalWidth?: number; logicalHeight?: number; scale?: number; interactive?: boolean; progress?: PageJob; now?: number; onPainted?: () => void }
@@ -71,8 +71,11 @@ export default function StreamingPreview({ html, streaming = false, queued = fal
   }, [interactive, logicalHeight, scale, channel]);
   return <div ref={surface} className="stream-surface" data-preview-updates={updates} data-streaming={streaming}>
     <iframe ref={frame} onLoad={() => { if (streaming) { queue.current.markReady(); push.current(); } }} key={streaming ? 'live' : 'final'} title={label} sandbox="allow-scripts" referrerPolicy="no-referrer" srcDoc={streaming ? liveDoc : finalDoc} style={{ width: logicalWidth || '100%', height: logicalHeight || '100%', transform: `scale(${scale})`, pointerEvents: interactive ? 'auto' : 'none' }}/>
-    {(queued || (streaming && !hasContent) || (!streaming && !html)) && <div className="stream-placeholder"><LoaderCircle size={27} className="spin"/><span>{queued ? '正在准备本地模型…' : streaming ? waitingStage(progress?.raw || html, progress?.stats?.outputTokens) : '暂无 HTML'}</span>
-      {progress && <small className="placeholder-metrics">{formatTps((progress.stats?.outputTokens || 0) > 1 ? progress.stats?.tps : null)} TPS · {(progress.stats?.outputTokens || 0).toLocaleString()} tokens · {seconds(now - progress.createdAt)}</small>}</div>}
+    {(queued || (streaming && !hasContent) || (!streaming && !html)) && <div className="stream-placeholder">
+      {(queued || streaming) && <LoaderCircle size={27} className="spin" aria-hidden="true"/>}
+      <span>{queued ? '正在等待 Albatross…' : streaming ? waitingStage(progress?.raw || html, progress?.stats?.outputTokens) : '暂无 HTML'}</span>
+      {progress && (queued || streaming) && <small className="placeholder-metrics">{seconds(now - progress.createdAt)}</small>}
+    </div>}
     {renderError && <div className="stream-error" role="alert">{renderError}</div>}
   </div>;
 }

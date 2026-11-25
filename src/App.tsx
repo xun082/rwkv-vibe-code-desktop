@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Code2, Eye, House, LayoutGrid } from 'lucide-react';
+import { desktop } from './bridge';
 import PromptInput from './components/PromptInput';
 import ModelPreparation from './components/ModelPreparation';
 import PromptExamples from './components/PromptExamples';
@@ -10,7 +11,7 @@ import { useGeneration } from './hooks/use-generation';
 import { extractPreview } from './preview';
 import GenerationStatus from './components/GenerationStatus';
 import { DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MIN_CONCURRENCY, type ConcurrencyMode } from './types';
-import { seconds, formatTps } from './lib/performance';
+import { seconds } from './lib/performance';
 
 type View = { page: 'home' | 'results' } | { page: 'detail'; id: string };
 
@@ -18,7 +19,9 @@ export default function App() {
   const [prompt, setPrompt] = useState('');
   const [count, setCount] = useState<ConcurrencyMode>(DEFAULT_CONCURRENCY);
   const [view, setView] = useState<View>({ page: 'home' });
-  const { results, loading, preparing, modelProgress, pauseModel, retryModel, error, generate, stop, edit, markPainted, isGenerating, hardware } = useGeneration();
+  const { results, loading, engine, setupStage, setupError, modelProgress, pausing, runSetup, pauseDownload, batchStats, error, generate, stop, edit, markPainted, isGenerating } = useGeneration();
+  const hardware = engine?.hardware ?? null;
+  const engineReady = engine?.ready === true;
   const effectiveCount = count === 'auto' ? hardware?.recommendedConcurrency ?? DEFAULT_CONCURRENCY : count;
   const isHome = view.page === 'home';
   const hasResults = results.length > 0;
@@ -85,25 +88,24 @@ export default function App() {
         <div className="header-space"/>
       </> : !isHome && <div className="header-input">
         <PromptInput compact value={prompt} onChange={setPrompt} onSubmit={submit} disabled={isGenerating}
-          count={count} onCountChange={setCount} hardware={hardware}/>
+          ready={engineReady} count={count} onCountChange={setCount} hardware={hardware}/>
       </div>}
 
-      {(!isHome || isGenerating) && <GenerationStatus results={results} loading={loading}
+      {(!isHome || isGenerating) && <GenerationStatus results={results} loading={loading} batchStats={batchStats}
         isGenerating={isGenerating} now={now} stop={() => void stop()}/>}
     </header>
 
-    {!isHome && <ModelPreparation progress={modelProgress} onPause={pauseModel}
-      onRetry={() => void retryModel(effectiveCount)} compact/>}
     {error && <div className="inline-error" role="alert">{error}</div>}
 
     {selected ? <main className="detail-layout">
       <section className="source-panel" aria-label="HTML 源码">
         <div className="detail-panel-heading">
           <Code2 size={15}/>HTML 代码编辑器
-          {selected.stats && <span className="detail-metrics">
-            {formatTps(selected.stats.outputTokens > 1 ? selected.stats.tps : null)} TPS · {selected.stats.outputTokens.toLocaleString()} tokens
-            {selected.stats.firstTokenMs != null ? ` · 首 token ${seconds(selected.stats.firstTokenMs)}` : ''}
-            {selected.firstRenderMs !== undefined ? ` · 首屏就绪 ${seconds(selected.firstRenderMs)}` : ''}
+          {(selected.stats?.firstTokenMs != null || selected.firstRenderMs !== undefined) && <span className="detail-metrics">
+            {[
+              selected.stats?.firstTokenMs != null ? `首段输出 ${seconds(selected.stats.firstTokenMs)}` : null,
+              selected.firstRenderMs !== undefined ? `首屏就绪 ${seconds(selected.firstRenderMs)}` : null,
+            ].filter(Boolean).join(' · ')}
           </span>}
         </div>
         <textarea ref={editor} spellCheck={false} value={code} readOnly={['running', 'queued'].includes(selected.status)}
@@ -123,12 +125,12 @@ export default function App() {
     </main> : isHome ? <main className="home-page">
       <div className="home-content">
         <h1 ref={homeHeading} tabIndex={-1}>你想创建什么？</h1>
+        {desktop && <ModelPreparation engine={engine} stage={setupStage} progress={modelProgress}
+          error={setupError} pausing={pausing} onInstall={() => void runSetup(true)} onPause={() => void pauseDownload()}/>}
         <PromptInput inputRef={promptInput} value={prompt} onChange={setPrompt} onSubmit={submit}
-          disabled={isGenerating} count={count} onCountChange={setCount} hardware={hardware}/>
+          disabled={isGenerating} ready={engineReady} count={count} onCountChange={setCount} hardware={hardware}/>
         <p className="batch-input-hint">多条需求用单独一行 <code>---</code> 分隔，每批最多 {MAX_CONCURRENCY} 条，且不超过所选并发数。单条需求可选 {MIN_CONCURRENCY}–{MAX_CONCURRENCY} 路的偶数档位。</p>
-        <ModelPreparation progress={modelProgress} onPause={pauseModel} onRetry={() => void retryModel(effectiveCount)}/>
         <PromptExamples onPick={value => { setPrompt(value); promptInput.current?.focus(); }}/>
-        <p className="model-caption">RWKV7 · 1.5B · {preparing ? '正在预热本地模型…' : '本地 HTML 流式生成'}</p>
       </div>
     </main> : <main className="results-viewport">
       <ResultGrid results={results} onOpen={openDetail} onPainted={markPainted} now={now}/>

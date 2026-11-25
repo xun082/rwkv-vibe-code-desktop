@@ -2,7 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { PageJob } from '../types';
 import StreamingPreview from '../StreamingPreview';
 import { extractPreview } from '../preview';
-import { formatTps, seconds, waitingStage } from '../lib/performance';
+import { formatTokens, formatTps, seconds, waitingStage } from '../lib/performance';
 
 // Adapted from the reference ResultGrid/useGridMetrics: render at 1280 px,
 // then scale the whole document to the card instead of forcing mobile breakpoints.
@@ -10,11 +10,21 @@ const PREVIEW_FRAME_WIDTH = 1280;
 function ResultCard({ job, index, scale, viewportHeight, onOpen, onPainted, now }: { job: PageJob; index: number; scale: number; viewportHeight: number; onOpen: (id: string) => void; onPainted: (id: string) => void; now: number }) {
   const running = job.status === 'running';
   const html = useMemo(() => job.html || extractPreview(job.raw), [job.html, job.raw]);
+  const timing = [
+    job.stats?.firstTokenMs != null ? `首段输出 ${seconds(job.stats.firstTokenMs)}` : running ? '等待首段输出' : null,
+    job.firstRenderMs !== undefined ? `首屏就绪 ${seconds(job.firstRenderMs)}` : running ? '首屏等待中' : null,
+  ].filter(Boolean).join(' · ');
   return <article className="result-card" role="button" tabIndex={0} aria-label={`查看方案 ${index + 1}`} onClick={() => onOpen(job.id)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen(job.id); } }} style={{ height: viewportHeight * scale }}>
     <StreamingPreview html={html} streaming={running} queued={job.status === 'queued'} label={`方案 ${index + 1}实时预览`} logicalWidth={PREVIEW_FRAME_WIDTH} logicalHeight={viewportHeight} scale={scale} interactive={false} progress={job} now={now} onPainted={() => onPainted(job.id)}/>
     <span className="result-number">{index + 1}</span>
-    <span className={`result-status metrics ${running ? 'running' : ''}`} title={running ? waitingStage(job.raw, job.stats?.outputTokens) : '该路生成指标由 llama-server 实际计时返回'}>{running && <i/>}{job.status === 'cancelled' && <span>已停止 ·</span>}<strong>{formatTps((job.stats?.outputTokens || 0) > 1 ? job.stats?.tps : null)} TPS</strong><span>{(job.stats?.outputTokens || 0).toLocaleString()} tokens</span></span>
-    <span className="result-timing" title="首 token：推理请求到首次输出；首屏就绪：点击生成到非空预览 DOM 准备好（含模型加载）">{job.stats?.firstTokenMs != null ? `首 token ${seconds(job.stats.firstTokenMs)}` : '等待首 token'}{job.firstRenderMs !== undefined ? ` · 首屏就绪 ${seconds(job.firstRenderMs)}` : running ? ' · 首屏等待中' : ''}</span>
+    <span className={`result-status metrics ${running ? 'running' : ''}`}
+      title={running ? waitingStage(job.raw, job.stats?.outputTokens) : '单路指标由服务端提供，批量指标见顶部'}>
+      {running && <i/>}
+      {job.status === 'cancelled' && <span>已停止 ·</span>}
+      <strong>{formatTps(job.stats?.tps)} TPS</strong>
+      <span>{formatTokens(job.stats?.outputTokens)} tokens</span>
+    </span>
+    {timing && <span className="result-timing" title="首段输出从请求发出计时，首屏就绪从点击生成计时">{timing}</span>}
     {job.error && <span className="result-notice error">{job.error}</span>}
     {job.incomplete && <span className="result-notice">内容未完成</span>}
     {!running && job.status !== 'queued' && <span className="result-open">方案 {index + 1}</span>}

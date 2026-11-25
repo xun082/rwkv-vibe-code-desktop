@@ -1,78 +1,61 @@
 # RWKV-Vibe-Code
 
-用本地 RWKV7 G1l 1.5B Q6_K 模型生成单文件 HTML。默认同时生成四个方案，每张预览会随输出更新。点击方案可查看源码和预览，生成结束后可编辑 HTML。
+用 Albatross 和 RWKV-7 并行生成单文件 HTML。默认一批生成四个方案，预览随输出更新。可查看源码、编辑已完成的 HTML，也可从列表或详情返回首页后继续查看当前方案。
 
-- 输入一条需求，默认生成 4 个独立采样的方案。可手动选择 2、4、6、8、10、12、14、16 路，也可选「自动」。
-- 「自动」根据本机可用逻辑处理器数量和物理内存估算并发。CPU 上限为逻辑处理器数量的一半，内存预算预留 4 GiB，再按每路 1.5 GiB 估算。取两项中较小的值，向下取整到偶数档位，并限制在 2–16 路。探测失败的那一项按 4 路估算。
-- 输入多条需求，用单独一行 `---` 分隔。每批最多 16 条，且不超过所选并发数。每条最多 2000 字。需求数为奇数时，引擎保留一个空闲槽位。
-- 停止会取消当前批次，保留已有输出。下次生成使用相同并发数时复用已加载的引擎，数量变化时按新批次分配槽位。
+- 输一条需求时，每路独立采样。支持 2、4、6、8、10、12、14、16 路，并可选「自动」。自动档根据服务报告的 GPU 批处理容量选择偶数档位。
+- 多条需求用单独一行 `---` 分隔。每批最多 16 条且不超过所选并发数，每条最多 2000 字。
+- 「停止」关闭当前批次的流，并在取得本批请求 ID 后向 Albatross 取消该请求。已返回的源码可以继续查看。服务在首帧前预填充时，只能先关闭客户端连接。
 
 界面、中文示例和网页生成提示词参考 [RWKV Vibe Code](https://github.com/RWKV-Vibe/rwkv-vibe-code/tree/189b74463dfbf98d793be8d92dd82ec51996d927)。
 
-## 本地开发
+## 在 Windows 和 Linux 使用
 
-桌面端支持 macOS Apple Silicon、Windows x64 和 Linux x64。开发需要 Node.js 24、pnpm 11.25.0、Python 3.10+ 和 Rustup。Rust 版本由 `rust-toolchain.toml` 固定。
+在 x64 电脑上安装桌面包。Windows 使用 `-setup.exe`。Ubuntu 22.04 或更新版本可使用 `.deb`，兼容的 Linux 桌面也可运行 `.AppImage`。本机推理需要支持 CUDA 12.9 版 Albatross 的 NVIDIA 显卡和驱动。
 
-macOS 开发需要 Xcode Command Line Tools 和 Homebrew 布局的 llama.cpp **0.9.0（cd959bae9）**。默认从 PATH 查找 `llama-server`，也可用 `LLAMA_SERVER_PATH` 指向匹配版本。
+打开应用，点「安装模型」。应用自动下载、校验 Albatross 运行时和 RWKV-7 G1l 1.5B 权重，然后启动本机推理。首次下载需要联网，Windows 约 3.67 GB，Linux 约 4.04 GB。下载可以暂停，下次从已下载的部分继续。安装后重开应用会自动加载模型，离线也可生成。
 
-```bash
-pnpm install --frozen-lockfile
-pnpm desktop:dev
-```
+运行时与权重保存在当前用户的应用数据目录 `studio.moment.localpage`。Windows 的目录位于 `%LOCALAPPDATA%`，Linux 位于 `$XDG_DATA_HOME`，默认为 `~/.local/share`。Albatross 仅监听本机回环地址，关闭应用时停止推理进程。启动故障的详情记录在应用数据目录的 `albatross.log`。
 
-Windows 开发需要 Visual Studio C++ Build Tools（x64）和 WebView2。运行时准备脚本下载同一提交的 llama.cpp CPU x64 版本，打包其 DLL 与所需的 Microsoft C++ 运行库。CPU 推理会自动选择机器支持的指令集。
+下载来源及版本见 [RWKV Lightning CUDA v1.8.15](https://github.com/Alic-Li/rwkv_lightning_cuda/releases/tag/v1.8.15) 和 [RWKV-7 G1l 1.5B](https://huggingface.co/BlinkDL/rwkv7-g1/blob/11e3c50128e479898eee79c48831a95cf3e21d91/rwkv7-g1l-1.5b-20261031-ctx34304.pth)。
 
-```powershell
-pnpm install --frozen-lockfile
-python scripts/prepare-runtime.py
-pnpm tauri dev
-```
+## 本地开发与打包
 
-Linux 开发和打包以 Ubuntu 22.04 x64 为基准。准备脚本会下载并校验同一提交的 llama.cpp CPU 运行时。
+开发需要 Node.js 24、pnpm 11.25.0 和 Rustup。Rust 版本由 `rust-toolchain.toml` 固定。macOS 开发需要 Xcode Command Line Tools，Windows 开发需要 Visual Studio C++ Build Tools（x64）和 WebView2。
+
+Ubuntu 22.04 x64 开发和打包依赖如下。
 
 ```bash
 sudo apt-get update
 sudo apt-get install build-essential file libwebkit2gtk-4.1-dev libxdo-dev \
-  libssl3 libgomp1 libayatana-appindicator3-dev librsvg2-dev libfuse2
+  libayatana-appindicator3-dev librsvg2-dev libfuse2
+```
+
+```bash
 pnpm install --frozen-lockfile
 pnpm desktop:dev
 ```
 
-`pnpm dev` 可单独预览前端。本地推理在 Tauri 桌面窗口内运行。
+macOS 可以开发和预览界面。需要联调时，macOS 的调试构建可读取 `ALBATROSS_URL` 和可选的 `ALBATROSS_API_KEY`，连接开发用的 Albatross。浏览器用 `pnpm dev` 预览，桌面逻辑用 `pnpm desktop:dev` 调试。
 
-## 模型与安装包
+- Windows x64 用 `pnpm desktop:build --bundles nsis` 生成 NSIS 安装包。
+- Linux x64 用 `NO_STRIP=1 pnpm desktop:build` 生成 `.deb` 和 `.AppImage`。
 
-```bash
-pnpm desktop:build
-```
+构建产物位于 `src-tauri/target/release/bundle/`。GitHub Actions 验证 Windows 和 Linux 安装包能启动，并发布安装包及 SHA-256 校验文件。
 
-macOS 产物位于 `src-tauri/target/release/bundle/dmg/`。Windows 运行 `python scripts/prepare-runtime.py` 后执行 `pnpm tauri build`，NSIS 安装包位于 `src-tauri/target/release/bundle/nsis/`。安装包内含推理运行时和模型许可。macOS 使用测试签名，Windows 预发行版目前无代码签名。
+## 流式生成与验证
 
-Linux 运行 `NO_STRIP=1 pnpm desktop:build`，`.deb` 和 `.AppImage` 分别位于 `src-tauri/target/release/bundle/deb/` 和 `src-tauri/target/release/bundle/appimage/`。Ubuntu/Debian 可用 `sudo apt install ./文件名.deb` 安装。其他兼容的 x64 Linux 发行版可用 `chmod +x 文件名.AppImage` 后直接执行。GitHub Actions 会为两种格式生成 SHA-256 校验文件，并随桌面预发行版上传。
-
-首次启动自动检查并准备约 **1.34 GB** 的模型。应用会复用已安装模型，也可从 `~/Models/rwkv/` 导入。缺失时优先从魔搭国内 CDN 下载，支持暂停、继续和失败换源。模型通过 SHA-256 校验后保存到应用数据目录，之后可离线推理。macOS 路径为 `~/Library/Application Support/studio.moment.localpage/models/`，Windows 路径为 `%APPDATA%\studio.moment.localpage\models\`。预览使用内置 Tailwind 编译器，网页中的 Unsplash 图片仍需网络。
-
-下载地址、固定版本和校验值见 [模型清单](src-tauri/model-manifest.json)。国内主源为 [同作者的 ModelScope 仓库](https://modelscope.cn/models/shoumenchougou/RWKV7-G1l-1.5B-GGUF)，备用顺序为魔搭 API、HF-Mirror、Hugging Face 原站。这个文件经 HF-Mirror 会跳转海外 CDN。
-
-Linux 的模型目录默认为 `~/.local/share/studio.moment.localpage/models/`。设置 `XDG_DATA_HOME` 时，模型位于该目录下的 `studio.moment.localpage/models/`。
-
-## 流式生成
-
-React 通过 Tauri 调用 Rust 后端。一次生成由一个 llama-server `POST /completion` 请求提交完整的 `prompt` 数组，引擎在同一条 SSE 流中按索引返回结果。Rust 分发各路 HTML、结束状态和引擎报告的 token 计数。React 合并高频更新，预览 iframe 每次处理一个快照并优先渲染最新内容。
-
-每路上下文为 16,384 token，最多生成 12,000 token。状态栏显示合计 TPS、输出 token 和经过时间。预览就绪时间以首个非空正文为准。
-
-## 验证
+一次生成向 Albatross 的 `POST /v1/batch/completions` 提交完整的 `contents`，GPU 服务在同一条 SSE 流中返回按索引标记的 HTML 增量和各路结束事件。首段延迟由桌面端测量。合计 token 数与解码 TPS 只采用服务中与本批请求 ID 匹配的已完成统计。预览使用内置 Tailwind 编译器，网页中的 Unsplash 图片仍需网络。
 
 ```bash
 pnpm test
 pnpm build
-pnpm prepare:runtime
 cargo test --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-安装模型后，可运行真实四路流式传输检查。测试使用应用的提示词和打包运行时，结果写入本地 `local-model-results/`。
+联调实际 Albatross 时，可以运行以下检查。测试发送四条不同需求，核对索引、各路结束事件和完整 HTML。只验证传输时可附加 `--max-tokens 128 --transport-only`。
 
 ```bash
-pnpm test:concurrency --concurrency 4 --max-tokens 128 --transport-only
+pnpm test:concurrency --concurrency 4
 ```
+
+协议参考 [原生接口说明](https://github.com/Alic-Li/rwkv_lightning_cuda/blob/v1.8.15/docs/http-api.md#batch-completions)。

@@ -2,12 +2,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import * as bridge from '../bridge';
 import { buildPromptBatch } from '../lib/batch-prompts';
 import { applyGenerationEvent } from '../lib/generation-events';
-import { DEFAULT_CONCURRENCY, type Concurrency, type GenerationEvent, type HardwareProfile, type ModelProgress, type PageJob } from '../types';
+import { MIN_CONCURRENCY, type Concurrency, type EngineStatus, type GenerationEvent, type InferenceMetrics, type ModelProgress, type ModelSetupStage, type PageJob } from '../types';
 
 interface ActiveBatch {
   ids: string[];
   submission?: Promise<void>;
   cancelled: boolean;
+}
+
+interface SetupAttempt {
+  pauseRequested: boolean;
+  paused: boolean;
 }
 
 const isActive = (job: PageJob) => job.status === 'queued' || job.status === 'running';
@@ -17,10 +22,13 @@ export function useGeneration() {
   const [results, setResults] = useState<PageJob[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [preparing, setPreparing] = useState(bridge.desktop);
+  const [engine, setEngine] = useState<EngineStatus | null>(null);
+  const [setupStage, setSetupStage] = useState<ModelSetupStage>(bridge.desktop ? 'checking' : 'idle');
+  const [setupError, setSetupError] = useState('');
   const [modelProgress, setModelProgress] = useState<ModelProgress | null>(null);
-  const [hardware, setHardware] = useState<HardwareProfile | null>(null);
-  const preparation = useRef<{ lanes: number; promise: Promise<void> } | null>(null);
+  const [pausing, setPausing] = useState(false);
+  const [batchStats, setBatchStats] = useState<InferenceMetrics | null>(null);
+  const setupAttempt = useRef<SetupAttempt | null>(null);
   const buffered = useRef(new Map<string, PageJob>());
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeBatch = useRef<ActiveBatch | null>(null);
@@ -34,49 +42,102 @@ export function useGeneration() {
     if (mounted.current) setResults(jobs);
   }, []);
 
-  const prepareEngine = useCallback(async (lanes: number) => {
-    while (preparation.current) {
-      if (preparation.current.lanes === lanes) return preparation.current.promise;
-      await preparation.current.promise;
-    }
-
-    setPreparing(true);
-    let modelReportedFailure = false;
-    const pending = (async () => {
+  const runSetup = useCallback(async (install: boolean) => {
+    if (!bridge.desktop || setupAttempt.current || activeBatch.current) return;
+    const attempt: SetupAttempt = { pauseRequested: false, paused: false };
+    setupAttempt.current = attempt;
+    setSetupStage('checking');
+    setSetupError('');
+    setModelProgress(null);
+    try {
       const status = await bridge.engineStatus();
-      if (mounted.current) setHardware(status.hardware);
-      if (status.ready && status.concurrency === lanes) return;
+      if (mounted.current) setEngine(status);
+      if (status.ready || !status.canPrepare) return;
 
-      if (!status.ready) {
-        await bridge.prepareModel(progress => {
-          modelReportedFailure = progress.phase === 'error' || progress.phase === 'paused';
-          if (mounted.current) setModelProgress(progress);
-        });
+      if (status.localSupported) {
+        if (!install && !(status.modelInstalled && status.runtimeInstalled)) return;
+        if (install) {
+          if (mounted.current) setSetupStage('installing');
+          await bridge.prepareModel(progress => {
+            if (setupAttempt.current !== attempt || !mounted.current) return;
+            if (progress.phase === 'paused') attempt.paused = true;
+            setModelProgress(progress);
+          });
+          if (attempt.paused) return;
+          attempt.pauseRequested = false;
+        }
       }
-      await bridge.startEngine(lanes);
-    })().catch(error => {
-      if (mounted.current && !modelReportedFailure) setError(errorMessage(error));
-      throw error;
-    }).finally(() => {
-      preparation.current = null;
-      if (mounted.current) setPreparing(false);
-    });
-    preparation.current = { lanes, promise: pending };
-    return pending;
+
+      if (mounted.current) setSetupStage('starting');
+      const ready = await bridge.startEngine(MIN_CONCURRENCY);
+      if (!ready.ready) throw new Error(ready.error || '本地模型启动失败');
+      if (mounted.current) {
+        setEngine(ready);
+        setError('');
+      }
+    } catch (error) {
+      const latest = await bridge.engineStatus().catch(() => null);
+      if (mounted.current) {
+        if (latest) setEngine(latest);
+        if (attempt.paused || attempt.pauseRequested) {
+          setModelProgress(progress => ({
+            downloadedBytes: progress?.downloadedBytes ?? 0,
+            totalBytes: progress?.totalBytes ?? 0,
+            speedBps: 0,
+            source: progress?.source ?? '',
+            message: '下载已暂停',
+            phase: 'paused',
+          }));
+        } else {
+          setSetupError(errorMessage(error));
+        }
+      }
+    } finally {
+      setupAttempt.current = null;
+      if (mounted.current) {
+        setSetupStage('idle');
+        setPausing(false);
+      }
+    }
   }, []);
 
   useEffect(() => {
     mounted.current = true;
-    if (bridge.desktop) void prepareEngine(DEFAULT_CONCURRENCY).catch(() => {});
+    void runSetup(false);
     return () => {
       mounted.current = false;
-      if (timer.current) clearTimeout(timer.current);
+      if (timer.current) {
+        clearTimeout(timer.current);
+        timer.current = null;
+      }
     };
-  }, [prepareEngine]);
+  }, [runSetup]);
+
+  const pauseDownload = async () => {
+    const attempt = setupAttempt.current;
+    if (!attempt || attempt.pauseRequested || modelProgress?.phase !== 'downloading') return;
+    attempt.pauseRequested = true;
+    setPausing(true);
+    try {
+      await bridge.cancelModelPreparation();
+    } catch (error) {
+      if (setupAttempt.current === attempt && mounted.current) {
+        attempt.pauseRequested = false;
+        setPausing(false);
+        setSetupError(errorMessage(error));
+      }
+    }
+  };
 
   const receive = useCallback((event: GenerationEvent) => {
     const job = buffered.current.get(event.id);
-    if (!job || !isActive(job)) return;
+    if (!job || !mounted.current) return;
+    // A batch total may be delivered after its last page has finished.
+    if (event.type === 'batchMetrics') {
+      setBatchStats(event.stats);
+      return;
+    }
+    if (!isActive(job)) return;
 
     const updated = applyGenerationEvent(job, event, Date.now());
     buffered.current.set(job.id, updated);
@@ -94,7 +155,7 @@ export function useGeneration() {
   }
 
   const generate = async (prompt: string, count: Concurrency, onQueued: () => void) => {
-    if (activeBatch.current) return;
+    if (activeBatch.current || setupAttempt.current) return;
 
     let prompts: string[];
     try {
@@ -104,7 +165,11 @@ export function useGeneration() {
       return;
     }
     if (!bridge.desktop) {
-      setError('本地模型需要在桌面应用中运行：pnpm desktop:dev');
+      setError('请在桌面应用中生成网页');
+      return;
+    }
+    if (!engine?.ready) {
+      setError('请先安装并启动本地模型');
       return;
     }
 
@@ -122,13 +187,17 @@ export function useGeneration() {
     activeBatch.current = batch;
     buffered.current = new Map(jobs.map(job => [job.id, job]));
     setResults(jobs);
+    setBatchStats(null);
     setError('');
     setLoading(true);
     onQueued();
 
     try {
       // An odd number of distinct requests uses one fewer slot than the even capacity.
-      await prepareEngine(prompts.length + prompts.length % 2);
+      const lanes = prompts.length + prompts.length % 2;
+      const ready = await bridge.startEngine(lanes);
+      if (!ready.ready) throw new Error(ready.error || '本地模型尚未就绪');
+      if (mounted.current) setEngine(ready);
       if (batch.cancelled) return;
 
       setLoading(false);
@@ -137,9 +206,14 @@ export function useGeneration() {
     } catch (error) {
       if (activeBatch.current !== batch) return;
 
+      if (!batch.submission && !batch.cancelled) {
+        const latest = await bridge.engineStatus().catch(() => null);
+        if (activeBatch.current !== batch) return;
+        if (latest && mounted.current) setEngine(latest);
+      }
       setLoading(false);
       const message = errorMessage(error);
-      if (batch.submission && !batch.cancelled) setError(message);
+      if (!batch.cancelled) setError(message);
       finishBatch(batch, batch.cancelled ? undefined : message);
     }
   };
@@ -168,22 +242,6 @@ export function useGeneration() {
     }
   };
 
-  const pauseModel = async () => {
-    if (!activeBatch.current?.submission) void stop();
-    try {
-      await bridge.cancelModelPreparation();
-    } catch (error) {
-      setError(errorMessage(error));
-    }
-  };
-
-  const retryModel = async (lanes: Concurrency) => {
-    // The paused/error event may arrive before the original IPC call settles.
-    await preparation.current?.promise.catch(() => {});
-    setError('');
-    await prepareEngine(lanes).catch(() => {});
-  };
-
   const markPainted = useCallback((id: string) => {
     const job = buffered.current.get(id);
     if (!job || job.firstRenderMs !== undefined || job.startedAt === undefined) return;
@@ -201,7 +259,7 @@ export function useGeneration() {
   };
 
   return {
-    results, loading, preparing, modelProgress, pauseModel, retryModel, error, hardware,
+    results, loading, engine, setupStage, setupError, modelProgress, pausing, runSetup, pauseDownload, batchStats, error,
     generate, stop, edit, markPainted,
     isGenerating: results.some(isActive),
   };

@@ -10,6 +10,8 @@ src-tauri/gen/
 __pycache__/
 *.gguf
 *.gguf.part
+*.pth
+*.pth.part
 *.dmg
 .env
 .env.*
