@@ -10,7 +10,7 @@ import StreamingPreview from './StreamingPreview';
 import { useGeneration } from './hooks/use-generation';
 import { extractPreview } from './preview';
 import GenerationStatus from './components/GenerationStatus';
-import { DEFAULT_CONCURRENCY, MAX_CONCURRENCY, MIN_CONCURRENCY, type ConcurrencyMode } from './types';
+import { DEFAULT_CONCURRENCY, type ConcurrencyMode } from './types';
 import { seconds } from './lib/performance';
 
 type View = { page: 'home' | 'results' } | { page: 'detail'; id: string };
@@ -129,7 +129,6 @@ export default function App() {
           error={setupError} pausing={pausing} onInstall={() => void runSetup(true)} onPause={() => void pauseDownload()}/>}
         <PromptInput inputRef={promptInput} value={prompt} onChange={setPrompt} onSubmit={submit}
           disabled={isGenerating} ready={engineReady} count={count} onCountChange={setCount} hardware={hardware}/>
-        <p className="batch-input-hint">多条需求用单独一行 <code>---</code> 分隔，每批最多 {MAX_CONCURRENCY} 条，且不超过所选并发数。单条需求可选 {MIN_CONCURRENCY}–{MAX_CONCURRENCY} 路的偶数档位。</p>
         <PromptExamples onPick={value => { setPrompt(value); promptInput.current?.focus(); }}/>
       </div>
     </main> : <main className="results-viewport">

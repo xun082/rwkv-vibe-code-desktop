@@ -13,7 +13,6 @@
 /* Full reference examples, with fill-and-edit behavior only. */
 .prompt-examples{margin-top:30px}.examples-heading{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:12px;margin-bottom:12px}.examples-heading i{height:1px;flex:1;background:var(--border)}.examples-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.example-prompt{display:flex;align-items:flex-start;text-align:left;gap:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface);padding:14px 16px;transition:border-color .15s,background .15s;min-width:0}.example-prompt:hover{border-color:#9cb9e3;background:#eff6ff}.example-prompt>svg{color:var(--muted);margin-top:2px}.example-prompt>span{min-width:0}.example-prompt strong{display:block;font-size:13px;font-weight:500;margin-bottom:5px}.example-prompt small{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;color:var(--muted);font-size:11px;line-height:1.6}.home-content:has(.prompt-examples){margin-top:-32px}@media(prefers-color-scheme:dark){.example-prompt:hover{border-color:#64748b;background:#303030}}@media(max-height:760px){.home-page{align-items:flex-start}.home-content:has(.prompt-examples){margin-top:0}}@media(max-width:540px){.examples-grid{grid-template-columns:1fr}.example-prompt small{-webkit-line-clamp:1}.prompt-examples{margin-top:24px}}
 
-.batch-input-hint{margin:10px 4px 0;font-size:11px;line-height:1.6;color:var(--muted)}.batch-input-hint code{font:inherit;color:var(--text)}
 
 .view-navigation,
 .prompt-actions {

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useRef, type RefObject } from 'react';
 import { ArrowUp } from 'lucide-react';
 import { CONCURRENCY_OPTIONS, DEFAULT_CONCURRENCY, MAX_CONCURRENCY, type ConcurrencyMode, type HardwareProfile } from '../types';
-import { MAX_PROMPT_LENGTH, splitPromptInput } from '../lib/batch-prompts';
+import { MAX_PROMPT_LENGTH } from '../lib/batch-prompts';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 
@@ -21,13 +21,7 @@ interface Props {
 export default function PromptInput({ value, onChange, onSubmit, disabled, ready, compact = false, count, onCountChange, hardware, inputRef }: Props) {
   const internalInput = useRef<HTMLTextAreaElement>(null);
   const input = inputRef || internalInput;
-  const promptCount = splitPromptInput(value).length;
   const recommended = hardware?.recommendedConcurrency ?? DEFAULT_CONCURRENCY;
-  const recommendation = hardware ? `Albatross 当前建议 ${recommended} 路` : `模型启动后将按本机 GPU 容量调整默认的 ${recommended} 路`;
-  const requiredSlots = promptCount + promptCount % 2;
-  const parallelismHint = promptCount > 1 && requiredSlots <= MAX_CONCURRENCY
-    ? `${promptCount} 条需求需至少选择 ${requiredSlots} 路。${recommendation}`
-    : recommendation;
   const canSubmit = ready && !disabled && !!value.trim();
 
   useLayoutEffect(() => {
@@ -42,7 +36,7 @@ export default function PromptInput({ value, onChange, onSubmit, disabled, ready
   }}>
     <textarea ref={input} rows={1} maxLength={MAX_CONCURRENCY * (2 * MAX_PROMPT_LENGTH + 5)}
       value={value} disabled={disabled} onChange={event => onChange(event.currentTarget.value)}
-      placeholder={compact ? '描述网页需求，多条需求用单独一行 --- 分隔...' : '描述你的想法...'}
+      placeholder={compact ? '描述网页需求...' : '描述你的想法...'}
       aria-label="网页生成需求" onKeyDown={event => {
         if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
           event.preventDefault();
@@ -53,7 +47,7 @@ export default function PromptInput({ value, onChange, onSubmit, disabled, ready
       <Select value={String(count)} disabled={disabled} onValueChange={value => {
         onCountChange(value === 'auto' ? value : Number(value) as ConcurrencyMode);
       }}>
-        <SelectTrigger size={compact ? 'sm' : 'default'} aria-label="并发数量" title={parallelismHint}>
+        <SelectTrigger size={compact ? 'sm' : 'default'} aria-label="并发数量">
           <SelectValue/>
         </SelectTrigger>
         <SelectContent>
