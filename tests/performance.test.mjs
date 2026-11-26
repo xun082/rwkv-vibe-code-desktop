@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { summarizePerformance, waitingStage } from '../src/lib/performance.ts';
+import { summarizePerformance } from '../src/lib/performance.ts';
 const job = (overrides = {}) => ({ id: 'a', prompt: '', title: '', createdAt: 0, startedAt: 1000, status: 'running', raw: '中文字数与 token 数不同', html: '', stats: { outputTokens: 100, tps: 55 }, ...overrides });
 test('aggregate TPS uses engine tokens over elapsed inference time, not characters or summed per-stream averages', () => {
   const summary = summarizePerformance([job(), job({ id: 'b', stats: { outputTokens: 80, tps: 44 } })], 3000);
@@ -12,12 +12,6 @@ test('completion/cancellation freeze the denominator and retain the last reporte
   assert.equal(summarizePerformance(jobs,100000).elapsedMs,4000);
   assert.equal(summarizePerformance([],100000).tps,null);
 });
-test('waiting state distinguishes prefill, CSS-only output and body content', () => {
-  assert.match(waitingStage('',0),/首个 token/);
-  assert.match(waitingStage('<html><head><style>body{',40),/样式/);
-  assert.match(waitingStage('<html><body><h1>正文',70),/正文/);
-});
-
 test('completed jobs use backend elapsed time if a terminal timestamp was not available', () => {
   const j = job({status:'done', stats:{outputTokens:100,tps:40,elapsedMs:2500}});
   const m = summarizePerformance([j],999999);

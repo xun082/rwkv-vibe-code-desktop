@@ -3,7 +3,7 @@ import { autoCompleteHTML } from './lib/html.ts';
 // The reference prompt uses Unsplash photos. Inference stays local; photos may load online.
 export function previewDocument(html: string, position = { x: 0, y: 0 }) {
   const policy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob: https://images.unsplash.com https://plus.unsplash.com https://source.unsplash.com; font-src data:; connect-src 'none'; media-src data: blob:; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
-  const restore = position.x || position.y ? `<script>requestAnimationFrame(function(){scrollTo(${Number(position.x) || 0},${Number(position.y) || 0})})</script>` : '';
+  const restore = position.x || position.y ? `<script>requestAnimationFrame(function(){scrollTo({left:${Number(position.x) || 0},top:${Number(position.y) || 0},behavior:'instant'})})</script>` : '';
   return `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="${policy}"><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head><body>${html}${restore}</body></html>`;
 }
 export function extractPreview(raw: string) {

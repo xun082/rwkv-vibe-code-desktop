@@ -9,13 +9,6 @@ export function summarizePerformance(jobs: PageJob[], now: number) {
   const inferenceMs = Math.max(0, end - start);
   return { outputTokens, inferenceMs, tps: outputTokens && inferenceMs > 0 ? outputTokens * 1000 / inferenceMs : null, elapsedMs: jobs.length ? Math.max(0, (jobs.some(isActive) ? Math.max(now, end) : Math.max(...jobs.map(requestEnd))) - Math.min(...jobs.map(job => job.createdAt))) : 0 };
 }
-export function waitingStage(raw: string, tokens = 0) {
-  if (!tokens && !raw) return '正在处理输入，等待首个 token';
-  const body = /<body(?:\s|>)/i.exec(raw);
-  if (!body && /<style(?:\s|>)/i.test(raw)) return '正在生成样式，正文尚未输出';
-  if (!body) return '正在生成 HTML 结构';
-  return '正在生成正文，等待首次绘制';
-}
 export const seconds = (ms: number) => `${(Math.max(0, ms) / 1000).toFixed(1)}s`;
 export const formatTps = (tps: number | null | undefined) => tps != null && tps > 0 && Number.isFinite(tps) ? tps.toFixed(1) : '—';
 export const formatTokens = (tokens: number | undefined) => tokens != null && tokens > 0 && Number.isFinite(tokens) ? tokens.toLocaleString() : '—';

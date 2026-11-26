@@ -4,16 +4,16 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { streamingDocument } from '../src/preview.ts';
-import { installStreamRuntime } from '../src/preview-runtime.ts';
+import { installPreviewControls, installStreamRuntime } from '../src/preview-runtime.ts';
 
 const require = createRequire(import.meta.url);
 const source = readFileSync(require.resolve('morphdom/dist/morphdom-umd.js'), 'utf8');
-function canvas(channel = 'test-channel', tailwind = '') {
+function canvas(channel = 'test-channel', tailwind = '', controls = '') {
   const messages = [];
   const observers = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', error => { if (error.type !== 'css-parsing') throw error; });
-  const dom = new JSDOM(streamingDocument(source, installStreamRuntime.toString(), channel, '', tailwind), { runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole, beforeParse(window) {
+  const dom = new JSDOM(streamingDocument(source, installStreamRuntime.toString(), channel, controls, tailwind), { runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole, beforeParse(window) {
     const NativeObserver = window.MutationObserver;
     window.MutationObserver = class extends NativeObserver { constructor(callback) { super(callback); observers.push(this); } };
   } });
@@ -120,5 +120,53 @@ test('first nonempty preview is acknowledged once without relying on iframe anim
   assert.equal(c.messages.filter(message => message.type === 'preview-content-ready').length, 1);
   c.render('<html><body><h1>第一屏</h1><p>后续内容</p>');
   assert.equal(c.messages.filter(message => message.type === 'preview-content-ready').length, 1);
+  c.window.close();
+});
+
+test('a live canvas scrolls in small steps as content grows and yields to relayed manual scrolling', () => {
+  const c = canvas('scroll-test', '', installPreviewControls.toString());
+  const tasks = new Map();
+  let id = 0, top = 0, maxTop = 3;
+  c.window.setTimeout = (run, delay) => { tasks.set(++id, { run, delay }); return id; };
+  c.window.clearTimeout = id => tasks.delete(id);
+  Object.defineProperty(c.window, 'scrollY', { get: () => top });
+  Object.defineProperty(c.document.documentElement, 'scrollHeight', { get: () => 100 + maxTop });
+  Object.defineProperty(c.document.documentElement, 'clientHeight', { value: 100 });
+  c.window.scrollTo = ({ top: next, behavior }) => {
+    assert.equal(behavior, 'instant');
+    top = Math.min(maxTop, next);
+  };
+  const tick = () => {
+    assert.equal(tasks.size, 1);
+    const [id, { run }] = tasks.entries().next().value;
+    tasks.delete(id);
+    run();
+    c.window.dispatchEvent(new c.window.Event('scroll'));
+  };
+
+  c.render('<html><body><style>body{height:1000px}</style>');
+  assert.equal(tasks.size, 0);
+  c.render('<html><body><h1>第一屏</h1>');
+  assert.equal([...tasks.values()][0]?.delay, 1000);
+  tick();
+  assert.equal(top, 2);
+  assert.equal([...tasks.values()][0]?.delay, 40);
+  tick();
+  assert.equal(top, 3);
+  assert.equal(tasks.size, 0);
+
+  maxTop = 100;
+  c.render('<html><body><h1>第一屏</h1><section>新增内容</section>');
+  tick();
+  assert.equal(top, 5);
+  c.window.dispatchEvent(new c.window.MessageEvent('message', {
+    source: c.window, data: { type: 'preview-scroll', channel: 'scroll-test', top: 18 },
+  }));
+  assert.equal(top, 18);
+  assert.equal(tasks.size, 0);
+  assert.ok(c.messages.some(message => message.type === 'preview-position' && message.y === 18));
+  c.render('<html><body><h1>第一屏</h1><section>新增内容</section><p>更多内容</p>');
+  assert.equal(top, 18);
+  assert.equal(tasks.size, 0);
   c.window.close();
 });

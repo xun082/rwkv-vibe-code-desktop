@@ -32,6 +32,7 @@ export default function App() {
   const detailIndex = results.findIndex(job => job.id === detailId);
   const selected = results[detailIndex];
   const code = selected?.html || extractPreview(selected?.raw || '');
+  const outputError = error || (selected ? selected.error : !isHome && results.find(job => job.error)?.error);
   const editor = useRef<HTMLTextAreaElement>(null);
   const promptInput = useRef<HTMLTextAreaElement>(null);
   const homeHeading = useRef<HTMLHeadingElement>(null);
@@ -101,7 +102,7 @@ export default function App() {
       <AppUpdate updater={appUpdate}/>
     </header>
 
-    {error && <div className="inline-error" role="alert">{error}</div>}
+    {outputError && <div className="inline-error" role="alert">{outputError}</div>}
 
     {selected ? <main className="detail-layout">
       <section className="source-panel" aria-label="HTML 源码">
@@ -124,8 +125,7 @@ export default function App() {
         <div className="detail-panel-heading"><Eye size={15}/>实时预览</div>
         <div className="detail-preview-frame">
           <StreamingPreview key={selected.id} html={code} streaming={selected.status === 'running'}
-            queued={selected.status === 'queued'} label="实时预览" progress={selected} now={now}
-            onPainted={() => markPainted(selected.id)}/>
+            label="实时预览" onPainted={() => markPainted(selected.id)}/>
         </div>
       </section>
     </main> : isHome ? <main className="home-page">
@@ -139,7 +139,7 @@ export default function App() {
         <PromptExamples onPick={value => { setPrompt(value); promptInput.current?.focus(); }}/>
       </div>
     </main> : <main className="results-viewport">
-      <ResultGrid results={results} onOpen={openDetail} onPainted={markPainted} now={now}/>
+      <ResultGrid results={results} onOpen={openDetail} onPainted={markPainted}/>
     </main>}
   </div>;
 }

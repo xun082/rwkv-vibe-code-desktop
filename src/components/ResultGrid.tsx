@@ -2,39 +2,20 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { PageJob } from '../types';
 import StreamingPreview from '../StreamingPreview';
 import { extractPreview } from '../preview';
-import { formatTokens, formatTps, seconds, waitingStage } from '../lib/performance';
 
 // Adapted from the reference ResultGrid/useGridMetrics: render at 1280 px,
 // then scale the whole document to the card instead of forcing mobile breakpoints.
 const PREVIEW_FRAME_WIDTH = 1280;
-function ResultCard({ job, index, scale, viewportHeight, onOpen, onPainted, now }: { job: PageJob; index: number; scale: number; viewportHeight: number; onOpen: (id: string) => void; onPainted: (id: string) => void; now: number }) {
-  const running = job.status === 'running';
+function ResultCard({ job, scale, viewportHeight, onOpen, onPainted }: { job: PageJob; scale: number; viewportHeight: number; onOpen: (id: string) => void; onPainted: (id: string) => void }) {
   const html = useMemo(() => job.html || extractPreview(job.raw), [job.html, job.raw]);
-  const status = running ? '生成中' : job.status === 'cancelled' ? '已停止' : null;
-  const tps = formatTps(job.stats?.tps);
-  const tokens = formatTokens(job.stats?.outputTokens);
-  const timing = [
-    job.stats?.firstTokenMs != null ? `首段输出 ${seconds(job.stats.firstTokenMs)}` : running ? '等待首段输出' : null,
-    job.firstRenderMs !== undefined ? `首屏就绪 ${seconds(job.firstRenderMs)}` : running ? '首屏等待中' : null,
-  ].filter(Boolean).join(' · ');
-  return <article className="result-card" role="button" tabIndex={0} aria-label={`查看方案 ${index + 1}`} onClick={() => onOpen(job.id)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen(job.id); } }} style={{ height: viewportHeight * scale }}>
-    <StreamingPreview html={html} streaming={running} queued={job.status === 'queued'} label={`方案 ${index + 1}实时预览`} logicalWidth={PREVIEW_FRAME_WIDTH} logicalHeight={viewportHeight} scale={scale} interactive={false} progress={job} now={now} onPainted={() => onPainted(job.id)}/>
-    <span className="result-number">{index + 1}</span>
-    {(status || tps !== '—' || tokens !== '—') && <span className={`result-status metrics ${running ? 'running' : ''}`}
-      title={running ? waitingStage(job.raw, job.stats?.outputTokens) : undefined}>
-      {running && <i/>}
-      {status && <span>{status}</span>}
-      {tps !== '—' && <strong>{tps} TPS</strong>}
-      {tokens !== '—' && <span>{tokens} tokens</span>}
-    </span>}
-    {timing && <span className="result-timing" title="首段输出从请求发出计时，首屏就绪从点击生成计时">{timing}</span>}
-    {job.error && <span className="result-notice error">{job.error}</span>}
-    {job.incomplete && <span className="result-notice">内容未完成</span>}
-    {!running && job.status !== 'queued' && <span className="result-open">方案 {index + 1}</span>}
+  return <article className="result-card" role="button" tabIndex={0} aria-label={`查看${job.title}`} onClick={() => onOpen(job.id)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen(job.id); } }} style={{ height: viewportHeight * scale }}>
+    <StreamingPreview html={html} streaming={job.status === 'running'} label={`${job.title}实时预览`}
+      logicalWidth={PREVIEW_FRAME_WIDTH} logicalHeight={viewportHeight} scale={scale} interactive={false}
+      onPainted={() => onPainted(job.id)}/>
   </article>;
 }
 const Card = memo(ResultCard);
-export default function ResultGrid({ results, onOpen, onPainted, now }: { results: PageJob[]; onOpen: (id: string) => void; onPainted: (id: string) => void; now: number }) {
+export default function ResultGrid({ results, onOpen, onPainted }: { results: PageJob[]; onOpen: (id: string) => void; onPainted: (id: string) => void }) {
   const gridRef = useRef<HTMLDivElement>(null);
   const [metrics, setMetrics] = useState({ columns: 2, scale: .5, viewportHeight: 1000 });
   useEffect(() => {
@@ -52,5 +33,5 @@ export default function ResultGrid({ results, onOpen, onPainted, now }: { result
     update(); const observer = new ResizeObserver(update); observer.observe(grid); observer.observe(viewport);
     return () => observer.disconnect();
   }, [results.length]);
-  return <div className="result-grid" ref={gridRef} style={{ gridTemplateColumns: `repeat(${metrics.columns}, minmax(0,1fr))` }}>{results.map((job, index) => <Card key={job.id} job={job} index={index} scale={metrics.scale} viewportHeight={metrics.viewportHeight} onOpen={onOpen} onPainted={onPainted} now={now}/>)}</div>;
+  return <div className="result-grid" ref={gridRef} style={{ gridTemplateColumns: `repeat(${metrics.columns}, minmax(0,1fr))` }}>{results.map(job => <Card key={job.id} job={job} scale={metrics.scale} viewportHeight={metrics.viewportHeight} onOpen={onOpen} onPainted={onPainted}/>)}</div>;
 }

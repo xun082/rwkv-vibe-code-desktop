@@ -3,8 +3,65 @@ export function installStreamRuntime(morph: (from: Node, to: Node, options: obje
   const policy = document.querySelector('meta[http-equiv="Content-Security-Policy"]')!;
   let updates = 0;
   let painted = false;
+  let hasContent = false;
   const notify = (data: object) => parent.postMessage({ channel, ...data }, '*');
   let tailwindLoaded = false;
+
+  const motion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+  const maxTop = () => {
+    const scroller = document.scrollingElement || document.documentElement;
+    return Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  };
+  let expectedTop = scrollY;
+  let timer: number | null = null;
+  let startedScroll = false;
+  let manualScroll = false;
+  const canScroll = () => hasContent && !manualScroll && !motion?.matches && !document.hidden;
+  const pauseScroll = () => {
+    manualScroll = true;
+    if (timer !== null) window.clearTimeout(timer);
+    timer = null;
+  };
+  const detectManualPosition = () => {
+    if (Math.abs(scrollY - Math.min(expectedTop, maxTop())) > 1) pauseScroll();
+  };
+  const moveTo = (x: number, y: number) => {
+    window.scrollTo({ left: x, top: y, behavior: 'instant' });
+    expectedTop = scrollY;
+  };
+  const scheduleScroll = () => {
+    if (timer !== null || !canScroll() || maxTop() <= scrollY) return;
+    // Give the first screen time to read, then move without catching up after a stalled frame.
+    timer = window.setTimeout(() => {
+      timer = null;
+      detectManualPosition();
+      if (!canScroll()) return;
+      const from = scrollY;
+      const to = Math.min(maxTop(), from + 2);
+      if (to <= from) return;
+      moveTo(scrollX, to);
+      if (scrollY > from) {
+        startedScroll = true;
+        scheduleScroll();
+      }
+    }, startedScroll ? 40 : 1000);
+  };
+  window.addEventListener('scroll', detectManualPosition, { passive: true });
+  window.addEventListener('wheel', pauseScroll, { passive: true, capture: true });
+  window.addEventListener('touchmove', pauseScroll, { passive: true, capture: true });
+  window.addEventListener('keydown', event => {
+    if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(event.key)) pauseScroll();
+  }, true);
+  window.addEventListener('resize', scheduleScroll);
+  window.addEventListener('load', scheduleScroll, true);
+  document.addEventListener('visibilitychange', scheduleScroll);
+  motion?.addEventListener('change', scheduleScroll);
+  if (window.ResizeObserver) {
+    const observer = new ResizeObserver(scheduleScroll);
+    observer.observe(document.documentElement);
+    observer.observe(document.body);
+  }
+
   // Preserve the compiler's stylesheet when morphing model-authored head nodes.
   new MutationObserver(records => {
     for (const record of records) for (const node of record.addedNodes) {
@@ -15,7 +72,9 @@ export function installStreamRuntime(morph: (from: Node, to: Node, options: obje
   }).observe(document.head, { childList: true });
   const options = { onBeforeElUpdated: (from: Element, to: Element) => from === policy || from.hasAttribute('data-preview-runtime') || from.isEqualNode(to) || (from === document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(from.tagName)) ? false : undefined };
   window.addEventListener('message', event => {
-    if (event.source !== parent || event.data?.channel !== channel || event.data?.type !== 'render-html' || typeof event.data.html !== 'string') return;
+    if (event.source !== parent || event.data?.channel !== channel) return;
+    if (event.data.type === 'preview-scroll' && Number.isFinite(event.data.top)) pauseScroll();
+    if (event.data.type !== 'render-html' || typeof event.data.html !== 'string') return;
     if (event.data.html.length > 2 * 1024 * 1024) return;
     try {
       // DOMParser repairs unfinished HTML without executing the model's scripts.
@@ -42,19 +101,22 @@ export function installStreamRuntime(morph: (from: Node, to: Node, options: obje
       document.head.querySelectorAll('[data-preview-runtime]').forEach(node => nextHead.append(node.cloneNode(true)));
       parsed.head.querySelectorAll('style,title,meta[charset],meta[name="viewport"]').forEach(node => nextHead.append(node.cloneNode(true)));
       const x = scrollX, y = scrollY;
+      detectManualPosition();
       morph(document.head, nextHead, options);
       morph(document.body, parsed.body, options);
       document.documentElement.lang = parsed.documentElement.lang;
       // Styles can target html itself, rather than body.
       document.documentElement.className = parsed.documentElement.className;
       document.documentElement.style.cssText = parsed.documentElement.style.cssText;
-      if (x || y) scrollTo(x, y);
+      if (scrollX !== x || scrollY !== y) moveTo(x, y);
+      expectedTop = scrollY;
       updates++;
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
         acceptNode: node => node.textContent?.trim() && !node.parentElement?.closest('style,script,noscript,template') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
       });
-      const hasContent = !!walker.nextNode() || !!document.body.querySelector('img,svg,canvas,video,input,button');
+      hasContent = !!walker.nextNode() || !!document.body.querySelector('img,svg,canvas,video,input,button');
       notify({ type: 'preview-rendered', sequence: event.data.sequence, updates, hasContent, x: scrollX, y: scrollY });
+      scheduleScroll();
       if (hasContent && !painted) {
         painted = true;
         // Report a non-empty preview DOM synchronously. WKWebView may suspend
@@ -72,6 +134,12 @@ export function installStreamRuntime(morph: (from: Node, to: Node, options: obje
 // Height reporting and wheel relay adapted from rwkv-vibe-code/src/lib/preview.ts.
 export function installPreviewControls(channel: string) {
   let last = 0;
+  let x = scrollX, y = scrollY;
+  const reportPosition = () => {
+    if (x === scrollX && y === scrollY) return;
+    x = scrollX; y = scrollY;
+    parent.postMessage({ type: 'preview-position', channel, x, y }, '*');
+  };
   const post = () => {
     const height = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0);
     if (!height || Math.abs(height - last) < 8) return;
@@ -87,10 +155,14 @@ export function installPreviewControls(channel: string) {
     }
   };
   post(); window.addEventListener('load', post); window.addEventListener('load', reportPaint);
+  window.addEventListener('scroll', reportPosition, { passive: true });
   if (window.ResizeObserver) new ResizeObserver(post).observe(document.documentElement);
   window.addEventListener('message', event => {
-    if (event.source !== parent || event.data?.channel !== channel || event.data.type !== 'preview-scroll' || !Number.isFinite(event.data.top)) return;
-    window.scrollTo(0, event.data.top);
+    if (event.source !== parent || event.data?.channel !== channel) return;
+    if (event.data.type === 'render-html') post();
+    if (event.data.type !== 'preview-scroll' || !Number.isFinite(event.data.top)) return;
+    window.scrollTo({ left: scrollX, top: event.data.top, behavior: 'instant' });
+    reportPosition();
   });
   document.currentScript?.remove();
 }
