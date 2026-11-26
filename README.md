@@ -18,7 +18,7 @@
 
 下载来源及版本见 [RWKV Lightning CUDA v1.8.15](https://github.com/Alic-Li/rwkv_lightning_cuda/releases/tag/v1.8.15) 和 [RWKV-7 G1l 1.5B](https://huggingface.co/BlinkDL/rwkv7-g1/blob/11e3c50128e479898eee79c48831a95cf3e21d91/rwkv7-g1l-1.5b-20261031-ctx34304.pth)。
 
-从 v0.2.6 起，应用启动及运行期间会检查更新。发现新版本时，点右上角的更新按钮，应用会下载并校验签名，安装后重新打开。Debian 安装的应用可能显示系统管理员授权窗口。v0.2.5 及更早版本的用户需要先用新的安装包升级一次。
+从 v0.2.7 起，应用启动及运行期间会检查更新。发现新版本时，点右上角的更新按钮，应用会下载并校验签名，安装后重新打开。Debian 安装的应用可能显示系统管理员授权窗口。v0.2.5 及更早版本的用户需要先用新的安装包升级一次。
 
 ## 本地开发与打包
 

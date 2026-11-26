@@ -1,6 +1,6 @@
 [package]
 name = "local-page-studio"
-version = "0.2.6"
+version = "0.2.7"
 description = "Batch webpage generation with RWKV and Albatross"
 authors = ["moment"]
 edition = "2021"

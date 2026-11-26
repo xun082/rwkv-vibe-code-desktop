@@ -181,7 +181,8 @@ jobs:
           try {
             pnpm install --frozen-lockfile
             if ($LASTEXITCODE -ne 0) { throw 'Fixture dependency installation failed' }
-            pnpm exec tauri build --config upgrade-version.json --bundles nsis -- --locked
+            # PowerShell consumes the bare -- before forwarding arguments to pnpm.cmd.
+            cmd.exe /d /c 'pnpm exec tauri build --config upgrade-version.json --bundles nsis -- --locked'
             if ($LASTEXITCODE -ne 0) { throw 'Fixture build failed' }
           } finally { Pop-Location }
           $installer = @(Get-ChildItem "$env:CARGO_TARGET_DIR/release/bundle/nsis" -Filter '*_0.2.5_*-setup.exe')
