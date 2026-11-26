@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Code2, Eye, House, LayoutGrid } from 'lucide-react';
 import { desktop } from './bridge';
+import AppUpdate from './components/AppUpdate';
 import PromptInput from './components/PromptInput';
 import ModelPreparation from './components/ModelPreparation';
 import PromptExamples from './components/PromptExamples';
@@ -8,6 +9,7 @@ import ResultGrid from './components/ResultGrid';
 import { Button } from './components/ui/button';
 import StreamingPreview from './StreamingPreview';
 import { useGeneration } from './hooks/use-generation';
+import { useAppUpdate } from './hooks/use-app-update';
 import { extractPreview } from './preview';
 import GenerationStatus from './components/GenerationStatus';
 import { DEFAULT_CONCURRENCY, type ConcurrencyMode } from './types';
@@ -20,6 +22,7 @@ export default function App() {
   const [count, setCount] = useState<ConcurrencyMode>(DEFAULT_CONCURRENCY);
   const [view, setView] = useState<View>({ page: 'home' });
   const { results, loading, engine, setupStage, setupError, modelProgress, pausing, runSetup, pauseDownload, batchStats, error, generate, stop, edit, markPainted, isGenerating } = useGeneration();
+  const appUpdate = useAppUpdate(isGenerating || setupStage !== 'idle');
   const hardware = engine?.hardware ?? null;
   const engineReady = engine?.ready === true;
   const effectiveCount = count === 'auto' ? hardware?.recommendedConcurrency ?? DEFAULT_CONCURRENCY : count;
@@ -41,7 +44,9 @@ export default function App() {
     setView({ page: 'detail', id });
   }, []);
   const showResults = () => setView({ page: 'results' });
-  const submit = () => void generate(prompt, effectiveCount, showResults);
+  const submit = () => {
+    if (!appUpdate.installing) void generate(prompt, effectiveCount, showResults);
+  };
 
   useEffect(() => {
     if (!isGenerating) return;
@@ -87,12 +92,13 @@ export default function App() {
         {selected.status === 'running' && <span className="detail-live"><i/>实时更新中</span>}
         <div className="header-space"/>
       </> : !isHome && <div className="header-input">
-        <PromptInput compact value={prompt} onChange={setPrompt} onSubmit={submit} disabled={isGenerating}
+        <PromptInput compact value={prompt} onChange={setPrompt} onSubmit={submit} disabled={isGenerating || appUpdate.installing}
           ready={engineReady} count={count} onCountChange={setCount} hardware={hardware}/>
       </div>}
 
       {(!isHome || isGenerating) && <GenerationStatus results={results} loading={loading} batchStats={batchStats}
         isGenerating={isGenerating} now={now} stop={() => void stop()}/>}
+      <AppUpdate updater={appUpdate}/>
     </header>
 
     {error && <div className="inline-error" role="alert">{error}</div>}
@@ -126,9 +132,10 @@ export default function App() {
       <div className="home-content">
         <h1 ref={homeHeading} tabIndex={-1}>你想创建什么？</h1>
         {desktop && <ModelPreparation engine={engine} stage={setupStage} progress={modelProgress}
-          error={setupError} pausing={pausing} onInstall={() => void runSetup(true)} onPause={() => void pauseDownload()}/>}
+          error={setupError} pausing={pausing} disabled={appUpdate.installing}
+          onInstall={() => void runSetup(true)} onPause={() => void pauseDownload()}/>}
         <PromptInput inputRef={promptInput} value={prompt} onChange={setPrompt} onSubmit={submit}
-          disabled={isGenerating} ready={engineReady} count={count} onCountChange={setCount} hardware={hardware}/>
+          disabled={isGenerating || appUpdate.installing} ready={engineReady} count={count} onCountChange={setCount} hardware={hardware}/>
         <PromptExamples onPick={value => { setPrompt(value); promptInput.current?.focus(); }}/>
       </div>
     </main> : <main className="results-viewport">

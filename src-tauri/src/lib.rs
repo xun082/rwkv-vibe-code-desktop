@@ -1,4 +1,5 @@
 mod albatross;
+mod app_update;
 mod batch;
 mod concurrency;
 mod local_runtime;
@@ -526,31 +527,99 @@ async fn run_batch(
         ));
     }
 
+    let report_metrics = |stats| {
+        send(
+            channel,
+            GenerationEvent::BatchMetrics {
+                id: requests[0].id.clone(),
+                stats,
+            },
+        )
+    };
     let mut batch = batch::BatchStream::new(requests.len());
-    let result = read_batch(
-        state, requests, token, channel, response, started, &mut batch,
-    )
-    .await;
+    let (result, final_snapshot) = {
+        let (send_id, request_id) = tokio::sync::oneshot::channel();
+        let stream = read_batch(
+            state, requests, token, channel, response, started, &mut batch, send_id,
+        );
+        tokio::pin!(stream);
+        let observe = observe_batch_metrics(
+            &connection.endpoint,
+            &state.0.client,
+            request_id,
+            started,
+            report_metrics,
+        );
+        // Dropping the observer at stream completion also drops any in-flight
+        // status request. A slow status check never holds up the SSE reader.
+        tokio::select! {
+            biased;
+            result = &mut stream => (result, None),
+            observed = observe => match observed {
+                Ok(snapshot) => (stream.await, snapshot),
+                Err(error) => (Err(error), None),
+            },
+        }
+    };
 
     if let Some(id) = batch.request_id() {
         if result.is_err() {
             // The upstream empty-ID stop operation targets unrelated requests.
             connection.endpoint.stop(&state.0.client, id).await;
-        } else if let Some(stats) = connection
-            .endpoint
-            .final_metrics(&state.0.client, id, started.elapsed().as_millis() as u64)
-            .await
-        {
-            send(
-                channel,
-                GenerationEvent::BatchMetrics {
-                    id: requests[0].id.clone(),
-                    stats,
-                },
-            )?;
+        } else {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            let final_metrics = match final_snapshot {
+                Some(mut stats) => {
+                    stats.elapsed_ms = elapsed_ms;
+                    Some(stats)
+                }
+                None => {
+                    connection
+                        .endpoint
+                        .final_metrics(&state.0.client, id, elapsed_ms)
+                        .await
+                }
+            };
+            if let Some(stats) = final_metrics {
+                report_metrics(stats)?;
+            }
         }
     }
     result
+}
+
+async fn observe_batch_metrics(
+    endpoint: &albatross::Endpoint,
+    client: &reqwest::Client,
+    request_id: tokio::sync::oneshot::Receiver<String>,
+    started: Instant,
+    report: impl Fn(metrics::InferenceMetrics) -> Result<(), String>,
+) -> Result<Option<metrics::InferenceMetrics>, String> {
+    let Ok(id) = request_id.await else {
+        return Ok(None);
+    };
+    let mut counter = metrics::StreamRate::default();
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        let sent = Instant::now();
+        let Some(status) = endpoint.metrics_status(client).await else {
+            continue;
+        };
+        let sampled_at = sent + sent.elapsed() / 2;
+        let elapsed = sampled_at.duration_since(started);
+        if let Some(stats) = metrics::InferenceMetrics::from_finished_request(
+            &status["last_request"],
+            &id,
+            elapsed.as_millis() as u64,
+        ) {
+            return Ok(Some(stats));
+        }
+        if let Some(stats) = counter.sample(&status, &id, sampled_at, elapsed) {
+            report(stats)?;
+        }
+    }
 }
 
 fn send(channel: &Channel<GenerationEvent>, event: GenerationEvent) -> Result<(), String> {
@@ -565,6 +634,7 @@ async fn read_batch(
     response: reqwest::Response,
     started: Instant,
     batch: &mut batch::BatchStream,
+    request_id: tokio::sync::oneshot::Sender<String>,
 ) -> Result<(), String> {
     let content_type = response
         .headers()
@@ -585,6 +655,7 @@ async fn read_batch(
     }
     let mut stream = response.bytes_stream();
     let mut decoder = sse::SseDecoder::default();
+    let mut request_id = Some(request_id);
     loop {
         let next = tokio::select! {
             biased;
@@ -607,7 +678,13 @@ async fn read_batch(
             }
             let value: Value =
                 serde_json::from_str(&data).map_err(|_| "无法解析 Albatross 批量事件")?;
-            for update in batch.push(&value, started.elapsed().as_millis() as u64)? {
+            let updates = batch.push(&value, started.elapsed().as_millis() as u64)?;
+            if let Some(id) = batch.request_id() {
+                if let Some(sender) = request_id.take() {
+                    let _ = sender.send(id.into());
+                }
+            }
+            for update in updates {
                 let id = &requests[update.index].id;
                 if let Some(stats) = update.stats {
                     send(
@@ -662,7 +739,10 @@ fn extract_html(text: &str) -> Result<String, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(any(windows, target_os = "linux"))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             engine_status,
@@ -670,7 +750,10 @@ pub fn run() {
             cancel_model_preparation,
             start_engine,
             generate_pages,
-            cancel_generation
+            cancel_generation,
+            app_update::app_update_status,
+            app_update::check_app_update,
+            app_update::install_app_update
         ])
         .build(tauri::generate_context!())
         .expect("failed to build desktop application")
@@ -886,10 +969,121 @@ mod tests {
             .unwrap();
         assert_eq!(exact["stats"]["outputTokens"], 125);
         assert_eq!(exact["stats"]["tps"], 147.2);
+        assert_eq!(exact["stats"]["rateKind"], "decode");
         assert!(messages
             .iter()
             .filter(|event| event["type"] == "metrics")
             .all(|event| event["stats"]["outputTokens"] == 0));
+    }
+
+    #[tokio::test]
+    async fn delivers_live_batch_rate_before_sse_finish_then_uses_exact_decode_speed() {
+        fn send_sse_chunk(stream: &mut TcpStream, data: &str) {
+            let payload = format!("data: {data}\n\n");
+            write!(stream, "{:x}\r\n{payload}\r\n", payload.len()).unwrap();
+            stream.flush().unwrap();
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint =
+            albatross::Endpoint::parse(&format!("http://{}", listener.local_addr().unwrap()), None)
+                .unwrap();
+        let (live_reported, live_seen) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut sse, headers, _) = accept(&listener);
+            assert!(headers.starts_with("POST /v1/batch/completions HTTP/1.1"));
+            write!(sse, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").unwrap();
+            for (text, tokens) in [("><h1>酒店</h1>", 8), ("<p>介绍</p></body></html>", 24)] {
+                let chunk = json!({"id":"req-42","object":"chat.completion.chunk",
+                    "choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]});
+                send_sse_chunk(&mut sse, &chunk.to_string());
+                let (stream, headers, _) = accept(&listener);
+                assert!(headers.starts_with("GET /v1/server/status HTTP/1.1"));
+                let mut active = status(Value::Null);
+                active["active_requests"] = json!([
+                    {"id":"req-42","endpoint":"batch.completions","generated_tokens":tokens,
+                     "prompt_tokens":120,"prefill_progress":1.0,"decode_speed":0.0},
+                    {"id":"other-request","endpoint":"batch.completions","generated_tokens":1000,
+                     "prompt_tokens":500,"prefill_progress":1.0,"decode_speed":0.0}
+                ]);
+                active["active_request"] = active["active_requests"][1].clone();
+                respond(stream, "200 OK", "application/json", &active.to_string());
+            }
+            live_seen.recv_timeout(Duration::from_secs(3)).unwrap();
+            let finish = json!({"id":"req-42","choices":[{"index":0,"delta":{},
+                "finish_reason":"stop","matched_stop":"</html>"}]});
+            send_sse_chunk(&mut sse, &finish.to_string());
+            send_sse_chunk(&mut sse, "[DONE]");
+            write!(sse, "0\r\n\r\n").unwrap();
+            drop(sse);
+
+            // v1.8.15 sends [DONE] before moving the request into last_request.
+            let (stream, _, _) = accept(&listener);
+            respond(
+                stream,
+                "200 OK",
+                "application/json",
+                &status(Value::Null).to_string(),
+            );
+            let (stream, _, _) = accept(&listener);
+            let final_status = status(json!({"id":"req-42","endpoint":"batch.completions",
+                "generated_tokens":23,"prompt_tokens":120,"decode_speed":48.5,"finished":42}));
+            respond(
+                stream,
+                "200 OK",
+                "application/json",
+                &final_status.to_string(),
+            );
+        });
+        let connection = EngineConnection::new(
+            endpoint,
+            serde_json::from_value(status(Value::Null)).unwrap(),
+            4,
+        )
+        .unwrap();
+        let messages = Arc::new(Mutex::new(Vec::new()));
+        let captured = messages.clone();
+        let channel = Channel::new(move |message| {
+            if let tauri::ipc::InvokeResponseBody::Json(text) = message {
+                let value: Value = serde_json::from_str(&text).unwrap();
+                if value["type"] == "batchMetrics"
+                    && value["stats"]["rateKind"] == "stream"
+                    && value["stats"]["tps"].as_f64().is_some_and(|tps| tps > 0.0)
+                {
+                    live_reported.send(()).unwrap();
+                }
+                captured.lock().unwrap().push(value);
+            }
+            Ok(())
+        });
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            run_batch(
+                &AppState::new(),
+                &connection,
+                &requests()[..1],
+                &CancellationToken::new(),
+                &channel,
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        server.join().unwrap();
+        let messages = messages.lock().unwrap();
+        let live = messages
+            .iter()
+            .position(|event| event["stats"]["outputTokens"] == 24)
+            .unwrap();
+        let done = messages
+            .iter()
+            .position(|event| event["type"] == "done")
+            .unwrap();
+        let final_metrics = messages.last().unwrap();
+        assert!(live < done);
+        assert_eq!(messages[live]["stats"]["rateKind"], "stream");
+        assert_eq!(final_metrics["stats"]["rateKind"], "decode");
+        assert_eq!(final_metrics["stats"]["outputTokens"], 23);
+        assert_eq!(final_metrics["stats"]["tps"], 48.5);
     }
 
     #[tokio::test]

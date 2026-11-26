@@ -18,6 +18,8 @@
 
 下载来源及版本见 [RWKV Lightning CUDA v1.8.15](https://github.com/Alic-Li/rwkv_lightning_cuda/releases/tag/v1.8.15) 和 [RWKV-7 G1l 1.5B](https://huggingface.co/BlinkDL/rwkv7-g1/blob/11e3c50128e479898eee79c48831a95cf3e21d91/rwkv7-g1l-1.5b-20261031-ctx34304.pth)。
 
+从 v0.2.6 起，应用启动及运行期间会检查更新。发现新版本时，点右上角的更新按钮，应用会下载并校验签名，安装后重新打开。Debian 安装的应用可能显示系统管理员授权窗口。v0.2.5 及更早版本的用户需要先用新的安装包升级一次。
+
 ## 本地开发与打包
 
 开发需要 Node.js 24、pnpm 11.25.0 和 Rustup。Rust 版本由 `rust-toolchain.toml` 固定。macOS 开发需要 Xcode Command Line Tools，Windows 开发需要 Visual Studio C++ Build Tools（x64）和 WebView2。
@@ -44,7 +46,7 @@ macOS 可以开发和预览界面。需要联调时，macOS 的调试构建可�
 
 ## 流式生成与验证
 
-一次生成向 Albatross 的 `POST /v1/batch/completions` 提交完整的 `contents`，GPU 服务在同一条 SSE 流中返回按索引标记的 HTML 增量和各路结束事件。首段延迟由桌面端测量。合计 token 数与解码 TPS 只采用服务中与本批请求 ID 匹配的已完成统计。预览使用内置 Tailwind 编译器，网页中的 Unsplash 图片仍需网络。
+一次生成向 Albatross 的 `POST /v1/batch/completions` 提交完整的 `contents`，GPU 服务在同一条 SSE 流中返回按索引标记的 HTML 增量和各路结束事件。首段延迟由桌面端测量。生成中依据本批请求的输出 token 计数采样显示「实时约 … TPS」，批次完成后显示 Albatross 报告的解码 TPS 和 token 总数。预览使用内置 Tailwind 编译器，网页中的 Unsplash 图片仍需网络。
 
 ```bash
 pnpm test

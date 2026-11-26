@@ -10,7 +10,15 @@ export interface HardwareProfile {
   recommendedConcurrency: Concurrency;
 }
 export type JobStatus = 'queued' | 'running' | 'done' | 'cancelled' | 'error';
-export interface InferenceMetrics { outputTokens: number; promptTokens: number; generationMs: number; tps: number; elapsedMs: number; firstTokenMs: number | null }
+export interface InferenceMetrics {
+  outputTokens: number;
+  promptTokens: number;
+  generationMs: number;
+  tps: number;
+  elapsedMs: number;
+  firstTokenMs: number | null;
+  rateKind?: 'stream' | 'decode' | null;
+}
 export interface PageJob { id: string; prompt: string; title: string; createdAt: number; status: JobStatus; raw: string; html: string; error?: string; incomplete?: boolean; seconds?: number; stats?: InferenceMetrics; startedAt?: number; endedAt?: number; firstRenderMs?: number }
 export interface EngineStatus {
   ready: boolean;

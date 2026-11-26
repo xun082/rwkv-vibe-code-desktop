@@ -204,6 +204,15 @@ impl Endpoint {
             .await;
     }
 
+    pub async fn metrics_status(&self, client: &Client) -> Option<Value> {
+        self.status(client, Duration::from_secs(1))
+            .await
+            .ok()?
+            .json()
+            .await
+            .ok()
+    }
+
     pub async fn final_metrics(
         &self,
         client: &Client,
@@ -216,17 +225,12 @@ impl Endpoint {
             if attempt > 0 {
                 tokio::time::sleep(Duration::from_millis(80)).await;
             }
-            let status: Value = self
-                .status(client, Duration::from_secs(1))
-                .await
-                .ok()?
-                .json()
-                .await
-                .ok()?;
-            if let Some(stats) =
-                InferenceMetrics::from_finished_request(&status["last_request"], id, elapsed_ms)
-            {
-                return Some(stats);
+            if let Some(status) = self.metrics_status(client).await {
+                if let Some(stats) =
+                    InferenceMetrics::from_finished_request(&status["last_request"], id, elapsed_ms)
+                {
+                    return Some(stats);
+                }
             }
         }
         None

@@ -10,6 +10,9 @@ const PREVIEW_FRAME_WIDTH = 1280;
 function ResultCard({ job, index, scale, viewportHeight, onOpen, onPainted, now }: { job: PageJob; index: number; scale: number; viewportHeight: number; onOpen: (id: string) => void; onPainted: (id: string) => void; now: number }) {
   const running = job.status === 'running';
   const html = useMemo(() => job.html || extractPreview(job.raw), [job.html, job.raw]);
+  const status = running ? '生成中' : job.status === 'cancelled' ? '已停止' : null;
+  const tps = formatTps(job.stats?.tps);
+  const tokens = formatTokens(job.stats?.outputTokens);
   const timing = [
     job.stats?.firstTokenMs != null ? `首段输出 ${seconds(job.stats.firstTokenMs)}` : running ? '等待首段输出' : null,
     job.firstRenderMs !== undefined ? `首屏就绪 ${seconds(job.firstRenderMs)}` : running ? '首屏等待中' : null,
@@ -17,13 +20,13 @@ function ResultCard({ job, index, scale, viewportHeight, onOpen, onPainted, now 
   return <article className="result-card" role="button" tabIndex={0} aria-label={`查看方案 ${index + 1}`} onClick={() => onOpen(job.id)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpen(job.id); } }} style={{ height: viewportHeight * scale }}>
     <StreamingPreview html={html} streaming={running} queued={job.status === 'queued'} label={`方案 ${index + 1}实时预览`} logicalWidth={PREVIEW_FRAME_WIDTH} logicalHeight={viewportHeight} scale={scale} interactive={false} progress={job} now={now} onPainted={() => onPainted(job.id)}/>
     <span className="result-number">{index + 1}</span>
-    <span className={`result-status metrics ${running ? 'running' : ''}`}
-      title={running ? waitingStage(job.raw, job.stats?.outputTokens) : '单路指标由服务端提供，批量指标见顶部'}>
+    {(status || tps !== '—' || tokens !== '—') && <span className={`result-status metrics ${running ? 'running' : ''}`}
+      title={running ? waitingStage(job.raw, job.stats?.outputTokens) : undefined}>
       {running && <i/>}
-      {job.status === 'cancelled' && <span>已停止 ·</span>}
-      <strong>{formatTps(job.stats?.tps)} TPS</strong>
-      <span>{formatTokens(job.stats?.outputTokens)} tokens</span>
-    </span>
+      {status && <span>{status}</span>}
+      {tps !== '—' && <strong>{tps} TPS</strong>}
+      {tokens !== '—' && <span>{tokens} tokens</span>}
+    </span>}
     {timing && <span className="result-timing" title="首段输出从请求发出计时，首屏就绪从点击生成计时">{timing}</span>}
     {job.error && <span className="result-notice error">{job.error}</span>}
     {job.incomplete && <span className="result-notice">内容未完成</span>}

@@ -10,11 +10,12 @@ interface Props {
   progress: ModelProgress | null;
   error: string;
   pausing: boolean;
+  disabled: boolean;
   onInstall: () => void;
   onPause: () => void;
 }
 
-export default function ModelPreparation({ engine, stage, progress, error, pausing, onInstall, onPause }: Props) {
+export default function ModelPreparation({ engine, stage, progress, error, pausing, disabled, onInstall, onPause }: Props) {
   if (engine?.ready) return null;
 
   if (stage === 'idle' && engine && !engine.canPrepare) {
@@ -51,7 +52,7 @@ export default function ModelPreparation({ engine, stage, progress, error, pausi
       {downloading && <Button type="button" variant="outline" onClick={onPause} disabled={pausing}>
         <Pause size={14} aria-hidden="true"/>{pausing ? '暂停中…' : '暂停'}
       </Button>}
-      {!active && <Button type="button" onClick={onInstall}>
+      {!active && <Button type="button" onClick={onInstall} disabled={disabled}>
         {paused || failure ? <RotateCcw size={14} aria-hidden="true"/> : <Download size={14} aria-hidden="true"/>}
         {paused ? '继续下载' : failure ? '重试' : hasAssets ? '启动模型' : '安装模型'}
       </Button>}

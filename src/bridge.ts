@@ -7,6 +7,19 @@ export const startEngine = (concurrency: number) => invoke<EngineStatus>('start_
 export const cancelModelPreparation = () => invoke<void>('cancel_model_preparation');
 export const cancelBatch = (ids: string[]) => invoke<void>('cancel_generation', { ids });
 
+export interface AppUpdateProgress {
+  phase: 'downloading' | 'verifying' | 'installing';
+  downloadedBytes: number;
+  totalBytes: number | null;
+}
+
+export const appUpdateStatus = () => invoke<{ supported: boolean; version: string }>('app_update_status');
+export const checkAppUpdate = () => invoke<{ version: string } | null>('check_app_update');
+
+export function installAppUpdate(version: string, onProgress: (event: AppUpdateProgress) => void) {
+  return invoke<void>('install_app_update', { version, onEvent: new Channel(onProgress) });
+}
+
 export function prepareModel(onEvent: (progress: ModelProgress) => void) {
   return invoke<void>('prepare_model', { onEvent: new Channel(onEvent) });
 }

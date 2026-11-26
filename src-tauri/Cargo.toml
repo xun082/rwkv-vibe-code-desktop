@@ -1,6 +1,6 @@
 [package]
 name = "local-page-studio"
-version = "0.2.5"
+version = "0.2.6"
 description = "Batch webpage generation with RWKV and Albatross"
 authors = ["moment"]
 edition = "2021"
@@ -28,3 +28,6 @@ flate2 = "1"
 
 [target.'cfg(all(target_arch = "x86_64", any(target_os = "windows", target_os = "linux")))'.dependencies]
 libloading = "0.8"
+
+[target.'cfg(any(target_os = "windows", target_os = "linux"))'.dependencies]
+tauri-plugin-updater = { version = "=2.14.1", default-features = false, features = ["rustls-tls", "system-proxy"] }
