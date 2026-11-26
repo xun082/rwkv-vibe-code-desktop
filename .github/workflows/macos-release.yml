@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish the current app version as a GitHub prerelease (main only)
+        description: Publish the current app version as a signed GitHub release (main only)
         type: boolean
         default: false
 
@@ -44,6 +44,16 @@ jobs:
           fi
           if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
             echo "::error::Tag $GITHUB_REF_NAME must match app version v$version"
+            exit 1
+          fi
+          if [[ "$(node -p 'require("./package.json").version')" != "$version" ]]; then
+            echo "::error::package.json version must match app version $version"
+            exit 1
+          fi
+          cargo_version=$(cargo metadata --no-deps --format-version 1 --locked --manifest-path src-tauri/Cargo.toml |
+            node -p 'JSON.parse(require("node:fs").readFileSync(0, "utf8")).packages.find(p => p.name === "local-page-studio").version')
+          if [[ "$cargo_version" != "$version" ]]; then
+            echo "::error::Cargo.toml version must match app version $version"
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -147,6 +157,8 @@ jobs:
           Copy-Item $installer[0].FullName "release/$file"
           $digest = (Get-FileHash "release/$file" -Algorithm SHA256).Hash.ToLowerInvariant()
           ("$digest  $file" + [char]10) | Set-Content "release/$file.sha256" -Encoding ascii -NoNewline
+          (Get-FileHash $desktop[0].FullName -Algorithm SHA256).Hash |
+            Set-Content release/desktop-executable.sha256 -Encoding ascii -NoNewline
 
       - name: Upload Windows installer and checksum
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -155,6 +167,38 @@ jobs:
           path: release/
           if-no-files-found: error
           retention-days: 14
+
+      - name: Build the previous-version NSIS upgrade fixture
+        if: >-
+          (github.event_name == 'push' && github.ref_type == 'tag') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release)
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'rwkv-upgrade-source'
+          node .github/workflows/support/prepare-upgrade-fixture.mjs $fixture
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to prepare upgrade fixture' }
+          $env:CARGO_TARGET_DIR = Join-Path $env:GITHUB_WORKSPACE 'src-tauri/target'
+          Push-Location $fixture
+          try {
+            pnpm install --frozen-lockfile
+            if ($LASTEXITCODE -ne 0) { throw 'Fixture dependency installation failed' }
+            pnpm exec tauri build --config upgrade-version.json --bundles nsis -- --locked
+            if ($LASTEXITCODE -ne 0) { throw 'Fixture build failed' }
+          } finally { Pop-Location }
+          $installer = @(Get-ChildItem "$env:CARGO_TARGET_DIR/release/bundle/nsis" -Filter '*_0.2.5_*-setup.exe')
+          if ($installer.Count -ne 1) { throw 'Expected one previous-version fixture installer' }
+          $null = New-Item -ItemType Directory -Path upgrade-fixture
+          Copy-Item $installer[0].FullName 'upgrade-fixture/fixture.exe'
+
+      - name: Upload Windows upgrade fixture
+        if: >-
+          (github.event_name == 'push' && github.ref_type == 'tag') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-upgrade-fixture
+          path: upgrade-fixture/
+          if-no-files-found: error
+          retention-days: 2
 
   linux:
     name: Test and package Linux x64 DEB and AppImage
@@ -242,8 +286,39 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Build previous-version DEB and AppImage upgrade fixtures
+        if: >-
+          (github.event_name == 'push' && github.ref_type == 'tag') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release)
+        env:
+          NO_STRIP: '1'
+        shell: bash
+        run: |
+          fixture="$RUNNER_TEMP/rwkv-upgrade-source"
+          node .github/workflows/support/prepare-upgrade-fixture.mjs "$fixture"
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/src-tauri/target"
+          (
+            cd "$fixture"
+            pnpm install --frozen-lockfile
+            pnpm exec tauri build --config upgrade-version.json -- --locked
+          )
+          mkdir upgrade-fixture
+          cp "$CARGO_TARGET_DIR"/release/bundle/deb/*_0.2.5_amd64.deb upgrade-fixture/fixture.deb
+          cp "$CARGO_TARGET_DIR"/release/bundle/appimage/*_0.2.5_amd64.AppImage upgrade-fixture/fixture.AppImage
+
+      - name: Upload Linux upgrade fixtures
+        if: >-
+          (github.event_name == 'push' && github.ref_type == 'tag') ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.publish_release)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-upgrade-fixtures
+          path: upgrade-fixture/
+          if-no-files-found: error
+          retention-days: 2
+
   publish:
-    name: Publish Windows and Linux prerelease
+    name: Sign and publish Windows and Linux release
     needs: [build, windows, linux]
     if: >-
       (github.event_name == 'push' && github.ref_type == 'tag') ||
@@ -255,6 +330,15 @@ jobs:
     concurrency:
       group: desktop-release-${{ needs.build.outputs.version }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: windows-x64
@@ -265,7 +349,78 @@ jobs:
           name: linux-x64
           path: release
 
-      - name: Publish verified files to GitHub Releases
+      - name: Install signing and verification tools
+        run: |
+          npm install --global pnpm@11.25.0
+          pnpm install --frozen-lockfile
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+
+      - name: Sign verified installers for in-app updates
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          if [[ -z "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            echo '::error::The TAURI_SIGNING_PRIVATE_KEY repository secret is required to publish an update.'
+            exit 1
+          fi
+          # Tauri v2 uses the native NSIS and AppImage bytes. Sign all three verified bundles
+          # here so the release key is scoped to signing and also covers the Debian installer.
+          for file in "RWKV-Vibe-Code_${VERSION}_x64-setup.exe" \
+                      "RWKV-Vibe-Code_${VERSION}_amd64.deb" \
+                      "RWKV-Vibe-Code_${VERSION}_amd64.AppImage"; do
+            (cd release && sha256sum --check --strict "$file.sha256")
+            pnpm exec tauri signer sign --app-version "$VERSION" "release/$file"
+            test -s "release/$file.sig"
+          done
+
+      - name: Verify signatures and build update manifest
+        working-directory: release
+        env:
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        shell: bash
+        run: |
+          config=../src-tauri/tauri.conf.json
+          origin="https://github.com/$GH_REPO/releases"
+          jq -e --arg endpoint "$origin/latest/download/latest.json" \
+            '.plugins.updater | .requireSignedVersion == true and .endpoints == [$endpoint]' "$config" > /dev/null
+          verification=$(mktemp -d)
+          trap 'rm -rf "$verification"' EXIT
+          jq -er '.plugins.updater.pubkey' "$config" | base64 --decode > "$verification/public.key"
+
+          nsis="RWKV-Vibe-Code_${VERSION}_x64-setup.exe"
+          deb="RWKV-Vibe-Code_${VERSION}_amd64.deb"
+          appimage="RWKV-Vibe-Code_${VERSION}_amd64.AppImage"
+          for file in "$nsis" "$deb" "$appimage"; do
+            base64 --decode "$file.sig" > "$verification/package.minisig"
+            minisign -Vq -p "$verification/public.key" -x "$verification/package.minisig" -m "$file"
+            awk -F '\t' -v version="version:$VERSION" '
+              /^trusted comment: / { for (i = 2; i <= NF; i++) if ($i == version) found = 1 }
+              END { exit !found }
+            ' "$verification/package.minisig"
+          done
+
+          # Key by bundle format to keep Debian and AppImage installations on their own path.
+          jq -n --arg version "$VERSION" --arg date "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --arg base "$origin/download/v$VERSION/" --arg nsis "$nsis" --arg deb "$deb" --arg appimage "$appimage" \
+            --rawfile nsis_sig "$nsis.sig" --rawfile deb_sig "$deb.sig" --rawfile appimage_sig "$appimage.sig" '
+              def artifact($file; $sig): { url: ($base + $file), signature: $sig };
+              {
+                version: $version,
+                pub_date: $date,
+                platforms: {
+                  "windows-x86_64-nsis": artifact($nsis; $nsis_sig),
+                  "linux-x86_64-deb": artifact($deb; $deb_sig),
+                  "linux-x86_64-appimage": artifact($appimage; $appimage_sig)
+                }
+              }
+            ' > latest.json
+
+      - name: Publish installers and updater manifest to GitHub Releases
         working-directory: release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -279,16 +434,136 @@ jobs:
             "RWKV-Vibe-Code_${VERSION}_amd64.deb"
             "RWKV-Vibe-Code_${VERSION}_amd64.AppImage"
           )
-          checksums=()
+          assets=(latest.json)
           for file in "${files[@]}"; do
-            checksums+=("$file.sha256")
+            assets+=("$file" "$file.sha256" "$file.sig")
           done
-          sha256sum --check "${checksums[@]}"
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             ref_args=(--verify-tag)
           else
             ref_args=(--target "$GITHUB_SHA")
           fi
-          gh release create "$tag" "${ref_args[@]}" --prerelease --title "RWKV-Vibe-Code $tag" \
-            --notes 'Installers for Windows x64 (NSIS) and Linux x64 (DEB and AppImage). The setup screen downloads Albatross v1.8.15 (CUDA 12.9) and RWKV-7 model weights for local generation. Use a supported NVIDIA GPU and driver. The Windows installer is unsigned.' \
-            "${files[@]}" "${checksums[@]}"
+          gh release create "$tag" "${ref_args[@]}" --latest --title "RWKV-Vibe-Code $tag" \
+            --notes 'Windows x64 (NSIS) and Linux x64 (DEB and AppImage) installers support signed in-app updates starting with this version. Install this release once from the assets below to enable updates. Debian updates may ask for administrator approval. Local generation uses Albatross v1.8.15 (CUDA 12.9) and RWKV-7 on a supported NVIDIA GPU. Windows may display an unknown-publisher prompt.' \
+            "${assets[@]}"
+
+  upgrade-windows:
+    name: Verify the published NSIS update
+    needs: [build, publish]
+    runs-on: windows-2025
+    timeout-minutes: 12
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-upgrade-fixture
+          path: upgrade-fixture
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: windows-x64
+          path: release
+
+      - name: Wait for the public updater feed
+        run: node .github/workflows/support/wait-for-update-feed.mjs
+
+      - name: Upgrade the installed Windows fixture using the published feed
+        run: |
+          $installDir = Join-Path $env:RUNNER_TEMP 'RWKV-Vibe-Code 更新测试'
+          $installer = (Resolve-Path 'upgrade-fixture/fixture.exe').Path
+          $setup = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$installDir" -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "Fixture NSIS exited with $($setup.ExitCode)" }
+          $desktop = @(Get-ChildItem $installDir -File -Filter '*.exe' | Where-Object Name -NotMatch 'uninstall')
+          if ($desktop.Count -ne 1) { throw 'Expected one installed fixture application' }
+          $appPath = $desktop[0].FullName
+          $appName = [IO.Path]::GetFileNameWithoutExtension($appPath)
+          if ($desktop[0].VersionInfo.ProductVersion -ne '0.2.5') { throw 'Fixture must start at version 0.2.5' }
+          $expected = (Get-Content release/desktop-executable.sha256 -Raw).Trim()
+          if ($expected -notmatch '^[0-9a-fA-F]{64}$' -or (Get-FileHash $appPath -Algorithm SHA256).Hash -eq $expected) {
+            throw 'Invalid expected digest or fixture already matches the release'
+          }
+          $identifier = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).identifier
+          $dataDir = Join-Path $env:LOCALAPPDATA $identifier
+          $null = New-Item -ItemType Directory -Path $dataDir -Force
+          $sentinel = Join-Path $dataDir 'upgrade-smoke.txt'
+          Set-Content $sentinel 'preserve-data' -NoNewline
+          $app = Start-Process -FilePath $appPath -PassThru
+          $replacement = $null
+          try {
+            for ($i = 0; $i -lt 120; $i++) {
+              $installed = Get-Item $appPath -ErrorAction SilentlyContinue
+              if ($installed -and $installed.VersionInfo.ProductVersion -eq $env:VERSION) {
+                $installedDigest = (Get-FileHash $appPath -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash
+                if ($installedDigest -eq $expected) {
+                  $replacement = Get-Process -Name $appName -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Id -ne $app.Id -and $_.Path -eq $appPath -and $_.MainWindowHandle -ne [IntPtr]::Zero } |
+                    Select-Object -First 1
+                  if ($replacement) {
+                    if ((Get-Content $sentinel -Raw) -ne 'preserve-data') { throw 'Update did not preserve app data' }
+                    Write-Host "NSIS installed and restarted the exact $env:VERSION release executable and preserved app data."
+                    return
+                  }
+                }
+              }
+              Start-Sleep -Seconds 2
+            }
+            throw "NSIS fixture did not install version $env:VERSION"
+          } finally {
+            $app.Refresh()
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id -ErrorAction SilentlyContinue }
+            if ($replacement) { Stop-Process -Id $replacement.Id -ErrorAction SilentlyContinue }
+          }
+
+  upgrade-linux:
+    name: Verify the published Linux ${{ matrix.format }} update
+    needs: [build, publish]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        format: [deb, appimage]
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-upgrade-fixtures
+          path: upgrade-fixture
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: linux-x64
+          path: release
+
+      - name: Install desktop runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-0 libgtk-3-0 libfuse2 xauth xvfb
+
+      - name: Wait for the public updater feed
+        run: node .github/workflows/support/wait-for-update-feed.mjs
+
+      - name: Upgrade the installed Linux fixture using the published feed
+        env:
+          FORMAT: ${{ matrix.format }}
+        run: xvfb-run -a bash .github/workflows/support/smoke-linux-upgrade.sh "$FORMAT"
