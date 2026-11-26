@@ -1,7 +1,7 @@
 use serde::Serialize;
 
 pub const MIN: usize = 2;
-pub const DEFAULT: usize = 4;
+pub const DEFAULT: usize = 8;
 pub const MAX: usize = 16;
 
 pub fn is_supported(lanes: usize) -> bool {
@@ -35,7 +35,7 @@ mod tests {
     fn automatic_concurrency_uses_the_gpu_server_capacity() {
         assert_eq!(
             HardwareProfile::from_capacity(None).recommended_concurrency,
-            4
+            8
         );
         assert_eq!(
             HardwareProfile::from_capacity(Some(7)).recommended_concurrency,

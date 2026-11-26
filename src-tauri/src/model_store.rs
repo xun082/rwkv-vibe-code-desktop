@@ -4,7 +4,7 @@ use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::File,
+    fs::{File, TryLockError},
     io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -41,6 +41,24 @@ pub struct Progress {
     pub message: String,
 }
 pub type Notify = Arc<dyn Fn(Progress) + Send + Sync>;
+
+pub(crate) struct InstallLock(File);
+
+impl InstallLock {
+    pub(crate) fn try_acquire(file: File) -> Result<Self, TryLockError> {
+        file.try_lock()?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for InstallLock {
+    fn drop(&mut self) {
+        // A forked child can retain the file description until exec even when
+        // the file is close-on-exec. Release the lock before closing our copy.
+        let _ = self.0.unlock();
+    }
+}
+
 #[derive(Clone, PartialEq)]
 struct Fingerprint {
     path: PathBuf,
@@ -253,8 +271,10 @@ impl ModelStore {
             .truncate(false)
             .open(directory.join(".install.lock"))
             .map_err(io_error)?;
-        lock.try_lock()
-            .map_err(|_| "另一个应用实例正在准备模型，请稍后重试".to_string())?;
+        let _lock = InstallLock::try_acquire(lock).map_err(|error| match error {
+            TryLockError::WouldBlock => "另一个应用实例正在准备模型，请稍后重试".into(),
+            TryLockError::Error(error) => io_error(error),
+        })?;
         let path = directory.join(&self.spec.filename);
         let part = directory.join(format!("{}.part", self.spec.filename));
         emit(
@@ -646,6 +666,28 @@ mod tests {
     fn client() -> Client {
         Client::builder().no_proxy().build().unwrap()
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_lock_releases_with_an_inherited_description_still_open() {
+        let root = root();
+        let path = root.join(".install.lock");
+        let guard = InstallLock::try_acquire(File::create(&path).unwrap()).unwrap();
+        // try_clone shares the open file description just like an inherited FD.
+        let inherited = guard.0.try_clone().unwrap();
+        let open = || File::options().read(true).write(true).open(&path).unwrap();
+        assert!(matches!(
+            InstallLock::try_acquire(open()),
+            Err(TryLockError::WouldBlock)
+        ));
+
+        drop(guard);
+        let replacement = InstallLock::try_acquire(open()).unwrap();
+        drop(inherited);
+        drop(replacement);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn resumes_exact_range_then_reuses_cache_offline() {
         let data = b"PTH0123456789abcdef".to_vec();

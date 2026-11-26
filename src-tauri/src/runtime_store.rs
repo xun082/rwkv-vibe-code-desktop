@@ -1,9 +1,9 @@
 //! Fetch the pinned upstream Albatross runtime into per-user app data.
 
-use crate::model_store::{ModelSpec, ModelStore, Notify, Progress, Source};
+use crate::model_store::{InstallLock, ModelSpec, ModelStore, Notify, Progress, Source};
 use flate2::read::GzDecoder;
 use std::{
-    fs::{self, File},
+    fs::{self, File, TryLockError},
     io::{self, BufWriter, Read, Write},
     path::{Component, Path, PathBuf},
     sync::Arc,
@@ -162,8 +162,10 @@ pub async fn prepare(
         .truncate(false)
         .open(cache.join(".runtime-install.lock"))
         .map_err(install_error)?;
-    lock.try_lock()
-        .map_err(|_| "另一个应用实例正在准备 Albatross 运行时，请稍后重试".to_string())?;
+    let lock = InstallLock::try_acquire(lock).map_err(|error| match error {
+        TryLockError::WouldBlock => "另一个应用实例正在准备 Albatross 运行时，请稍后重试".into(),
+        TryLockError::Error(error) => install_error(error),
+    })?;
     if let Some(runtime) = installed(directory) {
         return Ok(runtime);
     }

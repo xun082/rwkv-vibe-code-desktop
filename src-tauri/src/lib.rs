@@ -907,6 +907,14 @@ mod tests {
                 assert!(prompt.ends_with(prompt::HTML_PREFILL));
             }
             assert_eq!(body["metrics"], true);
+            assert_eq!(body["max_tokens"], 60_000);
+            assert_eq!(body["temperature"], 1.0);
+            assert_eq!(body["top_k"], 500);
+            assert_eq!(body["top_p"], 0.5);
+            assert_eq!(body["alpha_presence"], 1.0);
+            assert_eq!(body["alpha_frequency"], 0.1);
+            assert_eq!(body["alpha_decay"], 0.99);
+            assert_eq!(body["chunk_size"], 8);
             assert_eq!(body["stop"][0], "</html>");
             assert_eq!(body["stop"][3], "<EOD>");
 

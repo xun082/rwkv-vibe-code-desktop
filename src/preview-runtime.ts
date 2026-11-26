@@ -55,7 +55,7 @@ export function installStreamRuntime(morph: (from: Node, to: Node, options: obje
   window.addEventListener('resize', scheduleScroll);
   window.addEventListener('load', scheduleScroll, true);
   document.addEventListener('visibilitychange', scheduleScroll);
-  motion?.addEventListener('change', scheduleScroll);
+  motion?.addEventListener?.('change', scheduleScroll);
   if (window.ResizeObserver) {
     const observer = new ResizeObserver(scheduleScroll);
     observer.observe(document.documentElement);
@@ -65,7 +65,7 @@ export function installStreamRuntime(morph: (from: Node, to: Node, options: obje
   // Preserve the compiler's stylesheet when morphing model-authored head nodes.
   new MutationObserver(records => {
     for (const record of records) for (const node of record.addedNodes) {
-      if (node instanceof HTMLStyleElement && !node.hasAttribute('data-preview-model')) {
+      if (node instanceof HTMLStyleElement && !node.hasAttribute('data-preview-model') && !node.hasAttribute('data-preview-runtime')) {
         node.id = '__preview_tailwind'; node.setAttribute('data-preview-runtime', '');
       }
     }
@@ -73,9 +73,14 @@ export function installStreamRuntime(morph: (from: Node, to: Node, options: obje
   const options = { onBeforeElUpdated: (from: Element, to: Element) => from === policy || from.hasAttribute('data-preview-runtime') || from.isEqualNode(to) || (from === document.activeElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(from.tagName)) ? false : undefined };
   window.addEventListener('message', event => {
     if (event.source !== parent || event.data?.channel !== channel) return;
-    if (event.data.type === 'preview-scroll' && Number.isFinite(event.data.top)) pauseScroll();
-    if (event.data.type !== 'render-html' || typeof event.data.html !== 'string') return;
-    if (event.data.html.length > 2 * 1024 * 1024) return;
+    if (event.data.type === 'preview-wheel' && event.data.deltaY && Number.isFinite(event.data.deltaY)) pauseScroll();
+    if (event.data.type !== 'render-html') return;
+    // The native worker caps each lane at 8 MiB in UTF-8. Valid output can use up
+    // to the same number of UTF-16 code units in this iframe.
+    if (typeof event.data.html !== 'string' || event.data.html.length > 8 * 1024 * 1024) {
+      notify({ type: 'preview-error', sequence: event.data.sequence, message: 'Invalid preview snapshot' });
+      return;
+    }
     try {
       // DOMParser repairs unfinished HTML without executing the model's scripts.
       const parsed = new DOMParser().parseFromString(event.data.html, 'text/html');
@@ -131,21 +136,52 @@ export function installStreamRuntime(morph: (from: Node, to: Node, options: obje
   notify({ type: 'preview-ready' });
 }
 
-// Height reporting and wheel relay adapted from rwkv-vibe-code/src/lib/preview.ts.
+// Shared by the evolving canvas and the final document.
 export function installPreviewControls(channel: string) {
-  let last = 0;
+  // Keep native scrolling input, such as touch and keys, inside the iframe.
+  const boundary = document.createElement('style');
+  boundary.setAttribute('data-preview-runtime', '');
+  boundary.textContent = ':root, body { overscroll-behavior-y: contain !important }';
+  document.head.append(boundary);
+
+  const scrollTarget = (element: Element | null) => {
+    const root = document.scrollingElement || document.documentElement;
+    const rootOverflow = getComputedStyle(root).overflowY;
+    const body = document.body;
+    // When html leaves overflow visible, body supplies the viewport's overflow.
+    const bodyIsViewport = root === document.documentElement && rootOverflow === 'visible';
+    for (let region = element; region && region !== root; region = region.parentElement) {
+      if (region === body && bodyIsViewport) break;
+      if (region.scrollHeight > region.clientHeight && ['auto', 'scroll', 'overlay'].includes(getComputedStyle(region).overflowY)) return region;
+    }
+    const overflow = bodyIsViewport && body ? getComputedStyle(body).overflowY : rootOverflow;
+    return overflow === 'hidden' || overflow === 'clip' ? null : root;
+  };
+
   let x = scrollX, y = scrollY;
   const reportPosition = () => {
     if (x === scrollX && y === scrollY) return;
     x = scrollX; y = scrollY;
     parent.postMessage({ type: 'preview-position', channel, x, y }, '*');
   };
-  const post = () => {
-    const height = Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight || 0);
-    if (!height || Math.abs(height - last) < 8) return;
-    last = height;
-    parent.postMessage({ type: 'preview-height', channel, height }, '*');
+  const scrollAtPoint = (x: number, y: number, deltaY: number, deltaMode: number) => {
+    const scroller = scrollTarget(document.elementFromPoint(x, y));
+    if (!scroller) return;
+    const delta = deltaY * (deltaMode === 2 ? scroller.clientHeight : deltaMode === 1 ? 16 : 1);
+    if (scroller === (document.scrollingElement || document.documentElement)) {
+      window.scrollTo({ left: scrollX, top: scrollY + delta, behavior: 'instant' });
+      reportPosition();
+    } else {
+      scroller.scrollTo({ top: scroller.scrollTop + delta, behavior: 'instant' });
+    }
   };
+  window.addEventListener('wheel', event => {
+    const deltaMode = event.deltaMode;
+    if (!event.cancelable || !event.deltaY || event.ctrlKey) return;
+    event.preventDefault();
+    scrollAtPoint(event.clientX, event.clientY, event.deltaY, deltaMode);
+  }, { passive: false, capture: true });
+
   const reportPaint = () => {
     const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
       acceptNode: node => node.textContent?.trim() && !node.parentElement?.closest('style,script,noscript,template') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
@@ -154,15 +190,14 @@ export function installPreviewControls(channel: string) {
       parent.postMessage({ type: 'preview-content-ready', channel }, '*');
     }
   };
-  post(); window.addEventListener('load', post); window.addEventListener('load', reportPaint);
+  window.addEventListener('load', reportPaint);
   window.addEventListener('scroll', reportPosition, { passive: true });
-  if (window.ResizeObserver) new ResizeObserver(post).observe(document.documentElement);
   window.addEventListener('message', event => {
-    if (event.source !== parent || event.data?.channel !== channel) return;
-    if (event.data.type === 'render-html') post();
-    if (event.data.type !== 'preview-scroll' || !Number.isFinite(event.data.top)) return;
-    window.scrollTo({ left: scrollX, top: event.data.top, behavior: 'instant' });
-    reportPosition();
+    const wheel = event.data;
+    if (event.source !== parent || wheel?.channel !== channel || wheel.type !== 'preview-wheel') return;
+    if (!Number.isFinite(wheel.x) || !Number.isFinite(wheel.y) || !Number.isFinite(wheel.deltaY) || !wheel.deltaY) return;
+
+    scrollAtPoint(wheel.x, wheel.y, wheel.deltaY, wheel.deltaMode);
   });
   document.currentScript?.remove();
 }

@@ -19,13 +19,16 @@ type View = { page: 'home' | 'results' } | { page: 'detail'; id: string };
 
 export default function App() {
   const [prompt, setPrompt] = useState('');
-  const [count, setCount] = useState<ConcurrencyMode>(DEFAULT_CONCURRENCY);
+  const [selectedCount, setCount] = useState<ConcurrencyMode | null>(null);
   const [view, setView] = useState<View>({ page: 'home' });
   const { results, loading, engine, setupStage, setupError, modelProgress, pausing, runSetup, pauseDownload, batchStats, error, generate, stop, edit, markPainted, isGenerating } = useGeneration();
   const appUpdate = useAppUpdate(isGenerating || setupStage !== 'idle');
   const hardware = engine?.hardware ?? null;
   const engineReady = engine?.ready === true;
-  const effectiveCount = count === 'auto' ? hardware?.recommendedConcurrency ?? DEFAULT_CONCURRENCY : count;
+  const recommended = hardware?.recommendedConcurrency ?? DEFAULT_CONCURRENCY;
+  const defaultCount = recommended < DEFAULT_CONCURRENCY ? recommended : DEFAULT_CONCURRENCY;
+  const count = selectedCount ?? defaultCount;
+  const effectiveCount = count === 'auto' ? recommended : count;
   const isHome = view.page === 'home';
   const hasResults = results.length > 0;
   const detailId = view.page === 'detail' ? view.id : null;

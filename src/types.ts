@@ -1,6 +1,6 @@
 export const CONCURRENCY_OPTIONS = [2, 4, 6, 8, 10, 12, 14, 16] as const;
 export const MIN_CONCURRENCY = CONCURRENCY_OPTIONS[0];
-export const DEFAULT_CONCURRENCY = 4;
+export const DEFAULT_CONCURRENCY = 8;
 export const MAX_CONCURRENCY = CONCURRENCY_OPTIONS[CONCURRENCY_OPTIONS.length - 1];
 export type Concurrency = typeof CONCURRENCY_OPTIONS[number];
 export type ConcurrencyMode = Concurrency | 'auto';

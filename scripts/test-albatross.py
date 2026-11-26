@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 STATUS_PATH = "/v1/server/status"
 BATCH_PATH = "/v1/batch/completions"
 MAX_EVENT_BYTES = 2 * 1024 * 1024
+MAX_HTML_BYTES = 8 * 1024 * 1024
+MAX_OUTPUT_TOKENS = 60_000
 TOPICS = (
     "咖啡馆", "精品酒店", "纪念馆", "摄影展", "花店", "糕点店", "图书馆", "艺术馆",
     "唱片店", "旅行社", "植物园", "独立书店", "露营地", "陶艺工作室", "茶馆", "社区市集",
@@ -119,7 +121,7 @@ class Lane:
             if self.first_delta_ms is None:
                 self.first_delta_ms = elapsed_ms
             self.size += len(content.encode("utf-8"))
-            if self.size > MAX_EVENT_BYTES:
+            if self.size > MAX_HTML_BYTES:
                 raise RuntimeError(f"Lane {self.marker} exceeded the HTML size limit")
             self.fragments.append(content)
 
@@ -197,7 +199,7 @@ def measure_batch(client: Client, model: str, lanes: list[Lane], prompts: list[s
     payload = {
         "model": model, "contents": prompts, "stream": True, "max_tokens": max_tokens,
         "stop": ["</html>", "</HTML>", "\n\nUser:", "<EOD>"], "chunk_size": 8, "metrics": True,
-        "temperature": 1.0, "top_k": 60, "top_p": 0.5,
+        "temperature": 1.0, "top_k": 500, "top_p": 0.5,
         "alpha_presence": 1.0, "alpha_frequency": 0.1, "alpha_decay": 0.99,
     }
     request_id = None
@@ -254,13 +256,13 @@ def server_metrics(client: Client, request_id: str) -> dict | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default=os.environ.get("ALBATROSS_URL", "http://127.0.0.1:8000"))
-    parser.add_argument("--concurrency", type=int, choices=range(4, 17, 2), default=4)
-    parser.add_argument("--max-tokens", type=int, default=12000)
+    parser.add_argument("--concurrency", type=int, choices=range(4, 17, 2), default=8)
+    parser.add_argument("--max-tokens", type=int, default=MAX_OUTPUT_TOKENS)
     parser.add_argument("--timeout", type=float, default=180, help="Timeout in seconds per read during inference")
     parser.add_argument("--transport-only", action="store_true", help="Require every lane to stream and finish, but allow incomplete pages")
     args = parser.parse_args()
-    if not 1 <= args.max_tokens <= 12000 or not math.isfinite(args.timeout) or args.timeout <= 0:
-        parser.error("--max-tokens must be 1–12000 and --timeout must be a positive number")
+    if not 1 <= args.max_tokens <= MAX_OUTPUT_TOKENS or not math.isfinite(args.timeout) or args.timeout <= 0:
+        parser.error(f"--max-tokens must be 1–{MAX_OUTPUT_TOKENS} and --timeout must be a positive number")
     key = os.environ.get("ALBATROSS_API_KEY", "")
     try:
         client = Client(args.url, key)

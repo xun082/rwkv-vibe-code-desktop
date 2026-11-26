@@ -123,6 +123,18 @@ test('first nonempty preview is acknowledged once without relying on iframe anim
   c.window.close();
 });
 
+test('large valid snapshots render and oversize snapshots release their sequence', () => {
+  const c = canvas();
+  const comment = 'a'.repeat(2 * 1024 * 1024);
+  c.render(`<html><body><!--${comment}--><h1>Long preview</h1>`);
+  assert.equal(c.document.querySelector('h1')?.textContent, 'Long preview');
+  c.render('a'.repeat(8 * 1024 * 1024 + 1));
+  assert.ok(c.messages.some(message => message.type === 'preview-error' && message.sequence === 2));
+  c.render('<html><body><h1>Recovered</h1>');
+  assert.equal(c.document.querySelector('h1')?.textContent, 'Recovered');
+  c.window.close();
+});
+
 test('a live canvas scrolls in small steps as content grows and yields to relayed manual scrolling', () => {
   const c = canvas('scroll-test', '', installPreviewControls.toString());
   const tasks = new Map();
@@ -132,9 +144,10 @@ test('a live canvas scrolls in small steps as content grows and yields to relaye
   Object.defineProperty(c.window, 'scrollY', { get: () => top });
   Object.defineProperty(c.document.documentElement, 'scrollHeight', { get: () => 100 + maxTop });
   Object.defineProperty(c.document.documentElement, 'clientHeight', { value: 100 });
+  c.document.elementFromPoint = () => c.document.body;
   c.window.scrollTo = ({ top: next, behavior }) => {
     assert.equal(behavior, 'instant');
-    top = Math.min(maxTop, next);
+    top = Math.max(0, Math.min(maxTop, next));
   };
   const tick = () => {
     assert.equal(tasks.size, 1);
@@ -160,7 +173,7 @@ test('a live canvas scrolls in small steps as content grows and yields to relaye
   tick();
   assert.equal(top, 5);
   c.window.dispatchEvent(new c.window.MessageEvent('message', {
-    source: c.window, data: { type: 'preview-scroll', channel: 'scroll-test', top: 18 },
+    source: c.window, data: { type: 'preview-wheel', channel: 'scroll-test', x: 20, y: 20, deltaY: 13, deltaMode: 0 },
   }));
   assert.equal(top, 18);
   assert.equal(tasks.size, 0);
@@ -168,5 +181,35 @@ test('a live canvas scrolls in small steps as content grows and yields to relaye
   c.render('<html><body><h1>第一屏</h1><section>新增内容</section><p>更多内容</p>');
   assert.equal(top, 18);
   assert.equal(tasks.size, 0);
+  c.window.close();
+});
+
+test('a cursor-targeted scroll region owns relayed and native wheel input at its ends', () => {
+  const c = canvas('nested-test', '', installPreviewControls.toString());
+  c.render('<html><body><section style="overflow-y:auto"><p>Nested contents</p></section>');
+  const region = c.document.querySelector('section');
+  const text = c.document.querySelector('p');
+  Object.defineProperty(region, 'clientHeight', { value: 100 });
+  Object.defineProperty(region, 'scrollHeight', { value: 300 });
+  c.document.elementFromPoint = () => text;
+  region.scrollTo = ({ top }) => { region.scrollTop = Math.max(0, Math.min(200, top)); };
+  c.window.scrollTo = () => assert.fail('the nested gesture must stay inside its region');
+  const relay = deltaY => c.window.dispatchEvent(new c.window.MessageEvent('message', {
+    source: c.window, data: { type: 'preview-wheel', channel: 'nested-test', x: 20, y: 20, deltaY, deltaMode: 0 },
+  }));
+
+  relay(300);
+  assert.equal(region.scrollTop, 200);
+  relay(100);
+  assert.equal(region.scrollTop, 200);
+  const atBottom = new c.window.WheelEvent('wheel', { deltaY: 50, cancelable: true, bubbles: true });
+  text.dispatchEvent(atBottom);
+  assert.equal(atBottom.defaultPrevented, true);
+  assert.equal(region.scrollTop, 200);
+  c.render('<html><body><section style="overflow-y:auto"><p>Nested contents updated</p></section>');
+  assert.equal(c.document.querySelector('section'), region);
+  relay(-300);
+  relay(-100);
+  assert.equal(region.scrollTop, 0);
   c.window.close();
 });

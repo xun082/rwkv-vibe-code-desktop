@@ -7,6 +7,8 @@ use std::{net::IpAddr, time::Duration};
 
 const ENGINE_VERSION: &str = "albatross-1.3.0";
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_OUTPUT_TOKENS: u32 = 60_000;
+const SAMPLER_TOP_K: u32 = 500;
 
 #[derive(Clone)]
 pub struct Endpoint {
@@ -186,8 +188,8 @@ impl Endpoint {
             .header(header::ACCEPT, "text/event-stream")
             .json(&json!({
                 "model": model, "contents": prompts, "stream": true, "metrics": true,
-                "max_tokens": 12000, "chunk_size": 8, "stop": ["</html>", "</HTML>", "\n\nUser:", "<EOD>"],
-                "temperature": 1.0, "top_p": 0.5, "top_k": 60,
+                "max_tokens": MAX_OUTPUT_TOKENS, "chunk_size": 8, "stop": ["</html>", "</HTML>", "\n\nUser:", "<EOD>"],
+                "temperature": 1.0, "top_p": 0.5, "top_k": SAMPLER_TOP_K,
                 "alpha_presence": 1.0, "alpha_frequency": 0.1, "alpha_decay": 0.99
             }))
     }

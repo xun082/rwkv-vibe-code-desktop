@@ -2,7 +2,8 @@
 use crate::{extract_html, metrics::InferenceMetrics, prompt::HTML_PREFILL};
 use serde_json::Value;
 
-const MAX_HTML_BYTES: usize = 2 * 1024 * 1024;
+// At most 128 bytes per vocabulary token, plus room for the local HTML prefill.
+const MAX_HTML_BYTES: usize = 8 * 1024 * 1024;
 
 struct Lane {
     text: String,
@@ -204,5 +205,24 @@ mod tests {
         let (html, incomplete) = updates.remove(0).terminal.unwrap().unwrap();
         assert!(html.ends_with("</h1>"));
         assert!(incomplete);
+    }
+
+    #[test]
+    fn retains_a_full_sixty_thousand_token_lane() {
+        let mut batch = BatchStream::new(1);
+        let start = json!({"id":"req-1","choices":[{"index":0,"delta":{"content":"><body>"}}]});
+        batch.push(&start, 1).unwrap();
+        let content = " ".repeat(8 * 128);
+        let chunk = json!({"id":"req-1","choices":[{"index":0,"delta":{"content":content}}]});
+        for _ in 0..(60_000 / 8) {
+            batch.push(&chunk, 2).unwrap();
+        }
+        let finish = json!({"id":"req-1","choices":[{"index":0,
+            "delta":{"content":"</body></html>"},"finish_reason":"length"}]});
+        let mut updates = batch.push(&finish, 3).unwrap();
+        let (html, incomplete) = updates.remove(0).terminal.unwrap().unwrap();
+        assert!(html.len() >= 60_000 * 128);
+        assert!(html.ends_with("</body></html>"));
+        assert!(!incomplete);
     }
 }
